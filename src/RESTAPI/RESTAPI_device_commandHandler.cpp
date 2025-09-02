@@ -742,68 +742,106 @@ namespace OpenWifi {
 	void RESTAPI_device_commandHandler::Upgrade(
 		const std::string &CMD_UUID, uint64_t CMD_RPC, std::chrono::milliseconds timeout,
 		[[maybe_unused]] const GWObjects::DeviceRestrictions &Restrictions) {
-		poco_debug(Logger_, fmt::format("UPGRADE({},{}): TID={} user={} serial={}", CMD_UUID,
-										CMD_RPC, TransactionId_, Requester(), SerialNumber_));
 
-		const auto &Obj = ParsedBody_;
+	    poco_debug(Logger_, fmt::format("UPGRADE({},{}): TID={} user={} serial={}",
+			    CMD_UUID, CMD_RPC, TransactionId_, Requester(), SerialNumber_));
 
-		if (Obj->has(RESTAPI::Protocol::URI) && Obj->has(RESTAPI::Protocol::SERIALNUMBER)) {
+	    const auto &Obj = ParsedBody_;
 
-			auto SNum = Obj->get(RESTAPI::Protocol::SERIALNUMBER).toString();
-			if (SerialNumber_ != SNum) {
-				CallCanceled("UPGRADE", CMD_UUID, CMD_RPC, RESTAPI::Errors::SerialNumberMismatch);
-				return BadRequest(RESTAPI::Errors::SerialNumberMismatch);
-			}
+	    if (!(Obj->has(RESTAPI::Protocol::URI) && Obj->has(RESTAPI::Protocol::SERIALNUMBER))) {
+		return BadRequest(RESTAPI::Errors::MissingOrInvalidParameters);
+	    }
 
-			GWObjects::Device DeviceInfo;
-			if (!StorageService()->GetDevice(SerialNumber_, DeviceInfo)) {
-				return NotFound();
-			}
+	    auto SNum = Obj->get(RESTAPI::Protocol::SERIALNUMBER).toString();
+	    if (SerialNumber_ != SNum) {
+		CallCanceled("UPGRADE", CMD_UUID, CMD_RPC, RESTAPI::Errors::SerialNumberMismatch);
+		return BadRequest(RESTAPI::Errors::SerialNumberMismatch);
+	    }
 
-			std::string FWSignature = GetParameter("FWsignature", "");
-			auto URI = GetS(RESTAPI::Protocol::URI, Obj);
-			auto When = GetWhen(Obj);
+	    GWObjects::Device DeviceInfo;
+	    if (!StorageService()->GetDevice(SerialNumber_, DeviceInfo)) {
+		return NotFound();
+	    }
 
-			auto KeepRedirector = GetB(RESTAPI::Protocol::KEEPREDIRECTOR, Obj, true);
+	    std::string FWSignature = GetParameter("FWsignature", "");
+	    auto URI  = GetS(RESTAPI::Protocol::URI, Obj);
+	    auto When = GetWhen(Obj);
+	    auto KeepRedirector = GetB(RESTAPI::Protocol::KEEPREDIRECTOR, Obj, true);
 
-			GWObjects::CommandDetails Cmd;
+	    const bool useLocal = GetB("use-local-certificates", Obj, true);
 
-			Cmd.SerialNumber = SerialNumber_;
-			Cmd.UUID = CMD_UUID;
-			Cmd.SubmittedBy = Requester();
-			Cmd.Command = uCentralProtocol::UPGRADE;
-			Cmd.RunAt = When;
+	    std::string caB64, certB64, keyB64;
 
-			Poco::JSON::Object Params;
-
-			Params.set(uCentralProtocol::SERIAL, SerialNumber_);
-			Params.set(uCentralProtocol::URI, URI);
-			Params.set(uCentralProtocol::KEEP_REDIRECTOR, KeepRedirector ? 1 : 0);
-
-			if (DeviceInfo.restrictionDetails.upgrade && FWSignature.empty()) {
-				Poco::URI uri(URI);
-				FWSignature = SignatureManager()->Sign(DeviceInfo.restrictionDetails, uri);
-			}
-
-			if (!Restrictions.developer && FWSignature.empty() && DeviceInfo.restrictionDetails.upgrade) {
-				return BadRequest(RESTAPI::Errors::DeviceRequiresSignature);
-			}
-
-			if (!FWSignature.empty()) {
-				Params.set(uCentralProtocol::SIGNATURE, FWSignature);
-			}
-
-			Params.set(uCentralProtocol::WHEN, When);
-
-			std::stringstream ParamStream;
-			Params.stringify(ParamStream);
-			Cmd.Details = ParamStream.str();
-
-			return RESTAPI_RPC::WaitForCommand(CMD_RPC, APCommands::Commands::upgrade, true, Cmd,
-											   Params, *Request, *Response, timeout, nullptr, this,
-											   Logger_);
+	    auto isLikelyBase64 = [](const std::string &s) -> bool {
+		if (s.empty() || (s.size() % 4) != 0) return false;
+		for (char c : s) {
+		    if (std::isalnum(static_cast<unsigned char>(c)) || c=='+' || c=='/' || c=='='
+			|| c=='\n' || c=='\r') continue;
+		    return false;
 		}
-		BadRequest(RESTAPI::Errors::MissingOrInvalidParameters);
+		return true;
+	    };
+
+	    if (!useLocal) {
+		if (!Obj->has("ca-certificate") || !Obj->has("certificate") || !Obj->has("private-key")) {
+		    return BadRequest(RESTAPI::Errors::MissingOrInvalidParameters,
+				      "When use-local-certificates=false, 'ca-certificate', 'certificate' and 'private-key' are required.");
+		}
+		caB64   = GetS("ca-certificate", Obj);
+		certB64 = GetS("certificate", Obj);
+		keyB64  = GetS("private-key", Obj);
+
+		constexpr std::size_t MAX_B64 = 64 * 1024;
+		if (caB64.size() > MAX_B64 || certB64.size() > MAX_B64 || keyB64.size() > MAX_B64) {
+		    return BadRequest(RESTAPI::Errors::MissingOrInvalidParameters, "certificate/key too large");
+		}
+		if (!isLikelyBase64(caB64) || !isLikelyBase64(certB64) || !isLikelyBase64(keyB64)) {
+		    return BadRequest(RESTAPI::Errors::MissingOrInvalidParameters, "certificate/key must be base64");
+		}
+	    }
+
+	    if (DeviceInfo.restrictionDetails.upgrade && FWSignature.empty()) {
+		Poco::URI uri(URI);
+		FWSignature = SignatureManager()->Sign(DeviceInfo.restrictionDetails, uri);
+	    }
+	    if (!Restrictions.developer && FWSignature.empty() && DeviceInfo.restrictionDetails.upgrade) {
+		return BadRequest(RESTAPI::Errors::DeviceRequiresSignature);
+	    }
+
+	    GWObjects::CommandDetails Cmd;
+	    Cmd.SerialNumber = SerialNumber_;
+	    Cmd.UUID         = CMD_UUID;
+	    Cmd.SubmittedBy  = Requester();
+	    Cmd.Command      = uCentralProtocol::UPGRADE;
+	    Cmd.RunAt        = When;
+
+	    Poco::JSON::Object Params;
+	    Params.set(uCentralProtocol::SERIAL, SerialNumber_);
+	    Params.set(uCentralProtocol::URI, URI);
+	    Params.set(uCentralProtocol::KEEP_REDIRECTOR, KeepRedirector ? 1 : 0);
+	    Params.set("use-local-certificates", useLocal);
+
+	    if (!useLocal) {
+		Params.set("ca-certificate", caB64);
+		Params.set("certificate",    certB64);
+		Params.set("private-key",    keyB64);
+	    }
+
+	    if (!FWSignature.empty()) {
+		Params.set(uCentralProtocol::SIGNATURE, FWSignature);
+	    }
+	    Params.set(uCentralProtocol::WHEN, When);
+
+	    poco_information(Logger_,
+		fmt::format("UPGRADE SFD: serial={} useLocal={} keepRedirector={} uri={}",
+		    SerialNumber_, useLocal, KeepRedirector, URI));
+
+	    std::stringstream ParamStream;
+	    Params.stringify(ParamStream);
+	    Cmd.Details = ParamStream.str();
+
+	    return RESTAPI_RPC::WaitForCommand(CMD_RPC, APCommands::Commands::upgrade, true, Cmd,
+					       Params, *Request, *Response, timeout, nullptr, this, Logger_);
 	}
 
 	void RESTAPI_device_commandHandler::Reboot(
