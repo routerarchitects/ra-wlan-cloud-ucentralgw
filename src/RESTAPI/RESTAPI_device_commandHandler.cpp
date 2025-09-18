@@ -743,9 +743,8 @@ namespace OpenWifi {
 		const std::string &CMD_UUID, uint64_t CMD_RPC, std::chrono::milliseconds timeout,
 		[[maybe_unused]] const GWObjects::DeviceRestrictions &Restrictions) {
 
-		poco_debug(Logger_, fmt::format("UPGRADE({},{}): TID={} user={} serial={}",
-						CMD_UUID, CMD_RPC, TransactionId_, Requester(), SerialNumber_));
-
+		poco_debug(Logger_, fmt::format("UPGRADE({},{}): TID={} user={} serial={}",CMD_UUID,
+					CMD_RPC, TransactionId_, Requester(), SerialNumber_));
 		const auto &Obj = ParsedBody_;
 
 		if (!(Obj->has(RESTAPI::Protocol::URI) && Obj->has(RESTAPI::Protocol::SERIALNUMBER))) {
@@ -766,7 +765,10 @@ namespace OpenWifi {
 		auto URI  = GetS(RESTAPI::Protocol::URI, Obj);
 		auto When = GetWhen(Obj);
 		auto KeepRedirector = GetB(RESTAPI::Protocol::KEEPREDIRECTOR, Obj, true);
-
+		// CHANGE: Added support for "use-local-certificates"
+		// - If true → device will use its built-in operational certs
+		// - If false → controller must provide ca/cert/key (base64)
+		// WHY: Enables Secure Firmware Download via proxy with mTLS.
 		const bool useLocal = GetB("use-local-certificates", Obj, true);
 
 		std::string caB64, certB64, keyB64;
@@ -779,7 +781,9 @@ namespace OpenWifi {
 			}
 			return true;
 		};
-
+		// CHANGE: Validate and extract certs when use-local-certificates=false
+		// WHY: Ensures device can authenticate proxy securely using
+		//      cloud-provided CA/cert/key, with strict base64 + size checks.
 		if (!useLocal) {
 			if (!Obj->has("ca-certificate") || !Obj->has("certificate") || !Obj->has("private-key")) {
 				return BadRequest(RESTAPI::Errors::MissingOrInvalidParameters,
@@ -826,6 +830,10 @@ namespace OpenWifi {
 		Params.set(uCentralProtocol::SERIAL, SerialNumber_);
 		Params.set(uCentralProtocol::URI, URI);
 		Params.set(uCentralProtocol::KEEP_REDIRECTOR, KeepRedirector ? 1 : 0);
+		// CHANGE: Include "use-local-certificates" in params
+		// WHY: Device needs this flag to decide whether to use operational
+		//      certs or the provided certs in the upgrade flow.
+
 		Params.set("use-local-certificates", useLocal);
 
 		if (!useLocal) {
@@ -838,7 +846,8 @@ namespace OpenWifi {
 			Params.set(uCentralProtocol::SIGNATURE, FWSignature);
 		}
 		Params.set(uCentralProtocol::WHEN, When);
-
+		// CHANGE: Enhanced logging to show SFD-related flags
+		// WHY: Easier to debug upgrade issues (cert mode, proxy URL, etc.)
 		poco_information(Logger_,
 			fmt::format("UPGRADE SFD: serial={} useLocal={} keepRedirector={} uri={}",
 				SerialNumber_, useLocal, KeepRedirector, URI));
