@@ -765,6 +765,39 @@ namespace OpenWifi {
 			auto When = GetWhen(Obj);
 
 			auto KeepRedirector = GetB(RESTAPI::Protocol::KEEPREDIRECTOR, Obj, true);
+			//add flag to decide whether to use local certs or provided certs
+			const bool useLocal = GetB("use-local-certificates", Obj, true);
+			std::string caB64, certB64, keyB64;
+			//helper lambda to check if a string is valid Base64
+			auto isLikelyBase64 = [](const std::string &s) -> bool {
+				if (s.empty() || (s.size() % 4) != 0) return false;
+				for (char c : s) {
+					if (std::isalnum(static_cast<unsigned char>(c)) || c=='+' || c=='/' || c=='='
+							|| c=='\n' || c=='\r') continue;
+					return false;
+				}
+				return true;
+			};
+			//when not using local certs, enforce cert/key fields
+
+			if (!useLocal) {
+				if (!Obj->has("ca-certificate") || !Obj->has("certificate") || !Obj->has("private-key")) {
+					return BadRequest(RESTAPI::Errors::MissingOrInvalidParameters,
+							"When use-local-certificates=false, 'ca-certificate', 'certificate' and 'private-key' are required.");
+				}
+				caB64   = GetS("ca-certificate", Obj);
+				certB64 = GetS("certificate", Obj);
+				keyB64  = GetS("private-key", Obj);
+				//Limit size to 64 KB for safety
+				constexpr std::size_t MAX_B64 = 64 * 1024;
+				if (caB64.size() > MAX_B64 || certB64.size() > MAX_B64 || keyB64.size() > MAX_B64) {
+					return BadRequest(RESTAPI::Errors::MissingOrInvalidParameters, "certificate/key too large");
+				}
+				    //Validate that provided strings are Base64-encoded
+				if (!isLikelyBase64(caB64) || !isLikelyBase64(certB64) || !isLikelyBase64(keyB64)) {
+					return BadRequest(RESTAPI::Errors::MissingOrInvalidParameters, "certificate/key must be base64");
+				}
+			}
 
 			GWObjects::CommandDetails Cmd;
 
@@ -779,6 +812,13 @@ namespace OpenWifi {
 			Params.set(uCentralProtocol::SERIAL, SerialNumber_);
 			Params.set(uCentralProtocol::URI, URI);
 			Params.set(uCentralProtocol::KEEP_REDIRECTOR, KeepRedirector ? 1 : 0);
+			//always pass use-local-certificates flag to device
+			Params.set("use-local-certificates", useLocal);
+			if (!useLocal) {
+				Params.set("ca-certificate", caB64);
+				Params.set("certificate",       certB64);
+				Params.set("private-key",       keyB64);
+			}
 
 			if (DeviceInfo.restrictionDetails.upgrade && FWSignature.empty()) {
 				Poco::URI uri(URI);
@@ -794,6 +834,9 @@ namespace OpenWifi {
 			}
 
 			Params.set(uCentralProtocol::WHEN, When);
+			poco_information(Logger_,
+					fmt::format("UPGRADE SFD: serial={} useLocal={} keepRedirector={} uri={}",
+						SerialNumber_, useLocal, KeepRedirector, URI));
 
 			std::stringstream ParamStream;
 			Params.stringify(ParamStream);
