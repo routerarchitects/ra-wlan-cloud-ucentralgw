@@ -1,6 +1,6 @@
 # Contributing to OpenWiFi Cloud (Infernet Systems Fork)
 
-We’re excited that you’re interested in contributing! This project extends the Telecom Infra Project (TIP) openlan-cgw codebase with new features and improvements. 
+We’re excited that you’re interested in contributing! This project extends the Telecom Infra Project (TIP) wlan-cloud-ucentralgw codebase with new features and improvements. 
 To protect both the community and our business model, contributions follow a dual-license process.
 
 # License Model
