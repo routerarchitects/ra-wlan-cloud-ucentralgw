@@ -768,6 +768,9 @@ namespace OpenWifi {
 			//add flag to decide whether to use local certs or provided certs
 			const bool useLocal = GetB("use-local-certificates", Obj, true);
 			std::string caB64, certB64, keyB64;
+			poco_information(Logger_,
+					fmt::format("UPGRADE PRECHECK: serial={} useLocal={} keepRedirector={} uri={}",
+						SerialNumber_, useLocal, KeepRedirector, URI));
 			//helper lambda to check if a string is valid Base64
 			auto isLikelyBase64 = [](const std::string &s) -> bool {
 				if (s.empty() || (s.size() % 4) != 0) return false;
@@ -782,6 +785,8 @@ namespace OpenWifi {
 
 			if (!useLocal) {
 				if (!Obj->has("ca-certificate") || !Obj->has("certificate") || !Obj->has("private-key")) {
+					poco_warning(Logger_, "Missing one or more certificate fields while useLocal=false");
+					std::cout << std::flush;
 					return BadRequest(RESTAPI::Errors::MissingOrInvalidParameters,
 							"When use-local-certificates=false, 'ca-certificate', 'certificate' and 'private-key' are required.");
 				}
@@ -791,10 +796,14 @@ namespace OpenWifi {
 				//Limit size to 64 KB for safety
 				constexpr std::size_t MAX_B64 = 64 * 1024;
 				if (caB64.size() > MAX_B64 || certB64.size() > MAX_B64 || keyB64.size() > MAX_B64) {
+					poco_warning(Logger_, "Certificate/key too large (>64KB)");
+					std::cout << std::flush;
 					return BadRequest(RESTAPI::Errors::MissingOrInvalidParameters, "certificate/key too large");
 				}
 				    //Validate that provided strings are Base64-encoded
 				if (!isLikelyBase64(caB64) || !isLikelyBase64(certB64) || !isLikelyBase64(keyB64)) {
+					poco_warning(Logger_, " Certificate/key not base64");
+					std::cout << std::flush;
 					return BadRequest(RESTAPI::Errors::MissingOrInvalidParameters, "certificate/key must be base64");
 				}
 			}
@@ -834,9 +843,6 @@ namespace OpenWifi {
 			}
 
 			Params.set(uCentralProtocol::WHEN, When);
-			poco_information(Logger_,
-					fmt::format("UPGRADE SFD: serial={} useLocal={} keepRedirector={} uri={}",
-						SerialNumber_, useLocal, KeepRedirector, URI));
 
 			std::stringstream ParamStream;
 			Params.stringify(ParamStream);
