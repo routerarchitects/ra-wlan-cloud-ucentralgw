@@ -237,7 +237,7 @@ namespace OpenWifi {
 				GWObjects::DefaultConfiguration C;
 				Convert(DefConfig, C);
 				for (const auto &Model : C.models) {
-					if ((Model == "*" || Model == DeviceModel) && (Config.platform == Platform)){
+					if ((Model == "*" || Model == DeviceModel) && (C.platform == Platform)){
 						Config = C;
 						return true;
 					}
