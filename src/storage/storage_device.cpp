@@ -207,15 +207,14 @@ namespace OpenWifi {
 
 			std::string st;
 			std::string whereClause = "";
-			if(!platform.empty()) {
+			if (!platform.empty()) {
 				if (includeProvisioned == false) {
-
-					whereClause = fmt::format("WHERE entity='' and venue='' and DeviceType='" + platform + "'");
+					//whereClause = fmt::format("WHERE entity='' and venue='' and DeviceType='" + platform + "'");
+					whereClause = fmt::format("WHERE entity='' and venue='' and DeviceType='{}'", platform);
 				} else {
-					whereClause = fmt::format("WHERE DeviceType='" + platform + "'");
+					//whereClause = fmt::format("WHERE DeviceType='" + platform + "'");
+					whereClause = fmt::format("WHERE DeviceType='{}'", platform);
 				}
-			
-
 				//st = "SELECT SerialNumber From Devices WHERE DeviceType='" + platform + "' ";
 			} else {
 				if (includeProvisioned == false) {
@@ -223,7 +222,7 @@ namespace OpenWifi {
 				}
 				//st = "SELECT SerialNumber From Devices ";
 			}
-			
+
 			st = fmt::format("SELECT SerialNumber From Devices {}", whereClause);
 
 			if (orderBy.empty())
@@ -901,9 +900,9 @@ namespace OpenWifi {
 				if (includeProvisioned == false) {
 					whereClause = fmt::format("WHERE DeviceType='{}' and entity='' and venue=''",platform);
 				} else {
-					whereClause = fmt::format("WHERE DeviceType='{}'", platform);				
+					whereClause = fmt::format("WHERE DeviceType='{}'", platform);
 				}
-		
+
 			}
 
 			st =
@@ -912,7 +911,7 @@ namespace OpenWifi {
 							ComputeRange(From, HowMany));
 
 			//Logger().information(fmt::format(" GetDevices st is {} ", st));
-			
+
 			Select << ConvertParams(st), Poco::Data::Keywords::into(Records);
 			Select.execute();
 
