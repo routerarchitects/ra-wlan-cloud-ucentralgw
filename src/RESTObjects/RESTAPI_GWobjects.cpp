@@ -177,17 +177,16 @@ namespace OpenWifi::GWObjects {
 		field_to_json(Obj, "recorded", Recorded);
 	}
 
-    bool HealthCheck::from_json(const Poco::JSON::Object::Ptr &Obj) {
-        try {
-            field_from_json(Obj, "UUID", UUID);
-            field_from_json(Obj, "sanity", Sanity);
-            field_from_json(Obj, "recorded", Recorded);
-            return true;
-        } catch(...) {
-
-        }
-        return false;
-    }
+	bool HealthCheck::from_json(const Poco::JSON::Object::Ptr &Obj) {
+		try {
+			field_from_json(Obj, "UUID", UUID);
+			field_from_json(Obj, "sanity", Sanity);
+			field_from_json(Obj, "recorded", Recorded);
+			return true;
+		} catch (...) {
+		}
+		return false;
+	}
 
 	void DefaultFirmware::to_json(Poco::JSON::Object &Obj) const {
 		field_to_json(Obj, "deviceType", deviceType);
@@ -305,12 +304,12 @@ namespace OpenWifi::GWObjects {
 		field_to_json(Obj, "certificateIssuerName", certificateIssuerName);
 		field_to_json(Obj, "connectReason", connectReason);
 		field_to_json(Obj, "uptime", uptime);
-        field_to_json(Obj, "compatible", Compatible);
+		field_to_json(Obj, "compatible", Compatible);
 
 #ifdef TIP_GATEWAY_SERVICE
 		hasRADIUSSessions = RADIUSSessionTracker()->HasSessions(SerialNumber);
 #endif
-		field_to_json(Obj, "hasRADIUSSessions", hasRADIUSSessions );
+		field_to_json(Obj, "hasRADIUSSessions", hasRADIUSSessions);
 		field_to_json(Obj, "hasGPS", hasGPS);
 		field_to_json(Obj, "sanity", sanity);
 		field_to_json(Obj, "memoryUsed", memoryUsed);
@@ -340,45 +339,45 @@ namespace OpenWifi::GWObjects {
 		}
 	}
 
-    bool ConnectionState::from_json(const Poco::JSON::Object::Ptr &Obj) {
-        try {
-            field_from_json(Obj, "compatible", Compatible);
-            field_from_json(Obj, "ipAddress", Address);
-            field_from_json(Obj, "txBytes", TX);
-            field_from_json(Obj, "rxBytes", RX);
-            field_from_json(Obj, "messageCount", MessageCount);
-            field_from_json(Obj, "UUID", UUID);
-            field_from_json(Obj, "connected", Connected);
-            field_from_json(Obj, "firmware", Firmware);
-            field_from_json(Obj, "lastContact", LastContact);
-            field_from_json(Obj, "associations_2G", Associations_2G);
-            field_from_json(Obj, "associations_5G", Associations_5G);
-            field_from_json(Obj, "associations_6G", Associations_6G);
-            field_from_json(Obj, "webSocketClients", webSocketClients);
-            field_from_json(Obj, "websocketPackets", websocketPackets);
-            field_from_json(Obj, "kafkaClients", kafkaClients);
-            field_from_json(Obj, "kafkaPackets", kafkaPackets);
-            field_from_json(Obj, "locale", locale);
-            field_from_json(Obj, "started", started);
-            field_from_json(Obj, "sessionId", sessionId);
-            field_from_json(Obj, "connectionCompletionTime", connectionCompletionTime);
-            field_from_json(Obj, "totalConnectionTime", totalConnectionTime);
-            field_from_json(Obj, "certificateExpiryDate", certificateExpiryDate);
+	bool ConnectionState::from_json(const Poco::JSON::Object::Ptr &Obj) {
+		try {
+			field_from_json(Obj, "compatible", Compatible);
+			field_from_json(Obj, "ipAddress", Address);
+			field_from_json(Obj, "txBytes", TX);
+			field_from_json(Obj, "rxBytes", RX);
+			field_from_json(Obj, "messageCount", MessageCount);
+			field_from_json(Obj, "UUID", UUID);
+			field_from_json(Obj, "connected", Connected);
+			field_from_json(Obj, "firmware", Firmware);
+			field_from_json(Obj, "lastContact", LastContact);
+			field_from_json(Obj, "associations_2G", Associations_2G);
+			field_from_json(Obj, "associations_5G", Associations_5G);
+			field_from_json(Obj, "associations_6G", Associations_6G);
+			field_from_json(Obj, "webSocketClients", webSocketClients);
+			field_from_json(Obj, "websocketPackets", websocketPackets);
+			field_from_json(Obj, "kafkaClients", kafkaClients);
+			field_from_json(Obj, "kafkaPackets", kafkaPackets);
+			field_from_json(Obj, "locale", locale);
+			field_from_json(Obj, "started", started);
+			field_from_json(Obj, "sessionId", sessionId);
+			field_from_json(Obj, "connectionCompletionTime", connectionCompletionTime);
+			field_from_json(Obj, "totalConnectionTime", totalConnectionTime);
+			field_from_json(Obj, "certificateExpiryDate", certificateExpiryDate);
 			field_from_json(Obj, "certificateIssuerName", certificateIssuerName);
-            field_from_json(Obj, "connectReason", connectReason);
-            field_from_json(Obj, "uptime", uptime);
-            field_from_json(Obj, "hasRADIUSSessions", hasRADIUSSessions );
-            field_from_json(Obj, "hasGPS", hasGPS);
-            field_from_json(Obj, "sanity", sanity);
-            field_from_json(Obj, "memoryUsed", memoryUsed);
-            field_from_json(Obj, "sanity", sanity);
-            field_from_json(Obj, "load", load);
-            field_from_json(Obj, "temperature", temperature);
-            return true;
-        } catch(const Poco::Exception &E) {
-        }
-        return false;
-    }
+			field_from_json(Obj, "connectReason", connectReason);
+			field_from_json(Obj, "uptime", uptime);
+			field_from_json(Obj, "hasRADIUSSessions", hasRADIUSSessions);
+			field_from_json(Obj, "hasGPS", hasGPS);
+			field_from_json(Obj, "sanity", sanity);
+			field_from_json(Obj, "memoryUsed", memoryUsed);
+			field_from_json(Obj, "sanity", sanity);
+			field_from_json(Obj, "load", load);
+			field_from_json(Obj, "temperature", temperature);
+			return true;
+		} catch (const Poco::Exception &E) {
+		}
+		return false;
+	}
 
 	void DeviceConnectionStatistics::to_json(Poco::JSON::Object &Obj) const {
 		field_to_json(Obj, "averageConnectionTime", averageConnectionTime);
@@ -831,6 +830,95 @@ namespace OpenWifi::GWObjects {
 		try {
 			field_from_json(Obj, "serial", serialNumber);
 			field_from_json(Obj, "when", when);
+			return true;
+		} catch (const Poco::Exception &E) {
+		}
+		return false;
+	}
+
+	bool PackageInfo::from_json(const Poco::JSON::Object::Ptr &Obj) {
+		try {
+			field_from_json(Obj, "name", name);
+			field_from_json(Obj, "version", version);
+			return true;
+		} catch (const Poco::Exception &E) {
+		}
+		return false;
+	}
+
+	void PackageInfo::to_json(Poco::JSON::Object &Obj) const {
+		field_to_json(Obj, "name", name);
+		field_to_json(Obj, "version", version);
+	}
+
+	void PackageList::to_json(Poco::JSON::Object &Obj) const {
+		Obj.set("serialNumber", serialNumber);
+
+		Poco::JSON::Array packageJsonArray;
+		for (const auto &pkg : packageArray) {
+			Poco::JSON::Object pkgObj;
+			pkg.to_json(pkgObj);
+			packageJsonArray.add(pkgObj);
+		}
+		Obj.set("packageArray", packageJsonArray);
+
+		Obj.set("FirstUpdate", Poco::UInt64(FirstUpdate));
+		Obj.set("LastUpdate", Poco::UInt64(LastUpdate));
+	}
+
+	bool ToBeInstalled::from_json(const Poco::JSON::Object::Ptr &Obj) {
+		try {
+			field_from_json(Obj, "name", name);
+			field_from_json(Obj, "url", url);
+
+			Poco::URI uri(url);
+			std::string scheme = uri.getScheme();
+			if (scheme != "http" && scheme != "https") {
+				return false;
+			}
+
+			return true;
+		} catch (const Poco::Exception &E) {
+		}
+		return false;
+	}
+
+	void ToBeInstalled::to_json(Poco::JSON::Object &Obj) const {
+		Obj.set("name", name);
+		Obj.set("url", url);
+	}
+
+	bool PackageInstall::from_json(const Poco::JSON::Object::Ptr &Obj) {
+		try {
+			field_from_json(Obj, "serialNumber", serialNumber);
+			field_from_json(Obj, "when", when);
+			field_from_json(Obj, "packages", pkgs);
+
+			return true;
+		} catch (const Poco::Exception &E) {
+		}
+		return false;
+	}
+
+	bool ToBeRemoved::from_json(const Poco::JSON::Object::Ptr &Obj) {
+		try {
+			field_from_json(Obj, "name", name);
+
+			return true;
+		} catch (const Poco::Exception &E) {
+		}
+		return false;
+	}
+
+	void ToBeRemoved::to_json(Poco::JSON::Object &Obj) const {
+		Obj.set("name", name);
+	}
+
+	bool PackageRemove::from_json(const Poco::JSON::Object::Ptr &Obj) {
+		try {
+			field_from_json(Obj, "serialNumber", serialNumber);
+			field_from_json(Obj, "packages", pkgs);
+
 			return true;
 		} catch (const Poco::Exception &E) {
 		}

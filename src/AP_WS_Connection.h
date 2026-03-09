@@ -25,7 +25,7 @@
 namespace OpenWifi {
 
 	class AP_WS_Connection : public AP_Connection {
-		static constexpr int BufSize = 256000;
+		static constexpr int BufSize = 512000;
 
 	  public:
 		explicit AP_WS_Connection(Poco::Net::HTTPServerRequest &request,
@@ -35,6 +35,7 @@ namespace OpenWifi {
 
 		void EndConnection() override;
 		void ProcessIncomingFrame() override;
+		void ProcessWSFinalPayload();
 		[[nodiscard]] bool Send(const std::string &Payload) override;
 		[[nodiscard]] bool ValidatedDevice() override;
 
@@ -47,6 +48,7 @@ namespace OpenWifi {
 		std::shared_ptr<Poco::Net::SocketReactor> Reactor_;
 		std::unique_ptr<Poco::Net::WebSocket> WS_;
 		std::atomic_bool Registered_ = false;
+		Poco::Buffer<char> IncomingFrame_;
 	};
 
 } // namespace OpenWifi
