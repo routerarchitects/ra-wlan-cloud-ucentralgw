@@ -351,7 +351,7 @@ namespace OpenWifi {
 		} catch (...) {
 			poco_debug(
 				Logger(),
-				fmt::format(": SendRadiusAuthenticationData: Could not send data to device '{}'",
+				fmt::format(": SendRadiusAccountingData: Could not send data to device '{}'",
 							SerialNumber));
 		}
 		return false;

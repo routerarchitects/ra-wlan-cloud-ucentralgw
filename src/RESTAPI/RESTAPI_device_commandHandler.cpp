@@ -100,7 +100,7 @@ namespace OpenWifi {
 		case APCommands::Commands::package:{
 			GWObjects::DeviceRestrictions Restrictions;
 			std::string pkg_name = "";
-			if (!AP_WS_Server()->Connected(SerialNumberInt_, Restrictions)) {
+			if (!GetAPServer()->Connected(SerialNumberInt_, Restrictions)) {
 				CallCanceled(Command_.c_str(), RESTAPI::Errors::DeviceNotConnected);
 				return BadRequest(RESTAPI::Errors::DeviceNotConnected);
 			}
@@ -161,7 +161,7 @@ namespace OpenWifi {
 			return DeleteStatistics();
 		case APCommands::Commands::package: {
 			GWObjects::DeviceRestrictions Restrictions;
-			if (!AP_WS_Server()->Connected(SerialNumberInt_, Restrictions)) {
+			if (!GetAPServer()->Connected(SerialNumberInt_, Restrictions)) {
 				CallCanceled(Command_.c_str(), RESTAPI::Errors::DeviceNotConnected);
 				return BadRequest(RESTAPI::Errors::DeviceNotConnected);
 			}
