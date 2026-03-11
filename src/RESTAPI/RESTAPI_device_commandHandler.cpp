@@ -497,10 +497,6 @@ namespace OpenWifi {
 		poco_debug(Logger_, fmt::format("SCRIPT({},{}): TID={} user={} serial={}", CMD_UUID,
 										CMD_RPC, TransactionId_, Requester(), SerialNumber_));
 
-		if(IsDeviceSimulated(SerialNumber_)) {
-			return BadRequest(RESTAPI::Errors::SimulatedDeviceNotSupported);
-		}
-
 		const auto &Obj = ParsedBody_;
 		GWObjects::ScriptRequest SCR;
 		if (!SCR.from_json(Obj)) {
@@ -1014,11 +1010,6 @@ namespace OpenWifi {
 		[[maybe_unused]] const GWObjects::DeviceRestrictions &Restrictions) {
 		poco_debug(Logger_, fmt::format("WIFISCAN({},{}): TID={} user={} serial={}", CMD_UUID,
 										CMD_RPC, TransactionId_, Requester(), SerialNumber_));
-
-
-		if(IsDeviceSimulated(SerialNumber_)) {
-			return BadRequest(RESTAPI::Errors::SimulatedDeviceNotSupported);
-		}
 
 		const auto &Obj = ParsedBody_;
 
