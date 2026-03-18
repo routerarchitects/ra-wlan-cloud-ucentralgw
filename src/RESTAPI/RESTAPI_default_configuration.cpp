@@ -61,7 +61,7 @@ namespace OpenWifi {
 		}
 
 		DefConfig.platform = DefConfig.platform.empty() ? Platforms::AP : DefConfig.platform;
-		if(DefConfig.platform != Platforms::AP && DefConfig.platform != Platforms::SWITCH) {
+		if (!Platforms::IsValidPlatform(DefConfig.platform)) {
 			return BadRequest(RESTAPI::Errors::MissingOrInvalidParameters);
 		}
 
@@ -103,7 +103,7 @@ namespace OpenWifi {
 		}
 
 		if(ParsedBody_->has("platform")) {
-			if(NewConfig.platform.empty() || (NewConfig.platform != Platforms::AP && NewConfig.platform != Platforms::SWITCH)) {
+			if (NewConfig.platform.empty() || !Platforms::IsValidPlatform(NewConfig.platform)) {
 				return BadRequest(RESTAPI::Errors::MissingOrInvalidParameters);
 			}
 			Existing.platform = NewConfig.platform;

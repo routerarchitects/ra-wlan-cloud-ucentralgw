@@ -61,5 +61,6 @@ namespace OpenWifi {
 		{"x64_vm", Platforms::AP},
 		{"yuncore_ax840", Platforms::AP},
 		{"yuncore_fap640", Platforms::AP},
-		{"yuncore_fap650", Platforms::AP}};
+		{"yuncore_fap650", Platforms::AP},
+		{"intel", Platforms::OLG}};
 }

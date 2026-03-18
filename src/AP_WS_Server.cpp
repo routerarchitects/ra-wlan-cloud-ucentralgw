@@ -76,18 +76,14 @@ namespace OpenWifi {
 	bool AP_WS_Server::ValidateCertificate(const std::string &ConnectionId,
 										   const Poco::Crypto::X509Certificate &Certificate) {
 		if (IsCertOk()) {
-			// validate certificate agains trusted chain
-			for (const auto &cert : ClientCasCerts_) {
-				if (Certificate.issuedBy(cert)) {
-					return true;
-				}
-			}
-			poco_warning(
+			if (!Certificate.issuedBy(*IssuerCert_)) {
+				poco_warning(
 					Logger(),
-					fmt::format(
-						"CERTIFICATE({}): issuer mismatch. Certificate not issued by any trusted CA",
-						ConnectionId)
-					);
+					fmt::format("CERTIFICATE({}): issuer mismatch. Local='{}' Incoming='{}'",
+								ConnectionId, IssuerCert_->issuerName(), Certificate.issuerName()));
+				return false;
+			}
+			return true;
 		}
 		return false;
 	}
@@ -121,7 +117,6 @@ namespace OpenWifi {
 			P.verificationDepth = 9;
 			P.loadDefaultCAs = Svr.RootCA().empty();
 			P.cipherList = "ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH";
-			P.dhUse2048Bits = true;
 			P.caLocation = Svr.Cas();
 
 			auto Context = Poco::AutoPtr<Poco::Net::Context>(

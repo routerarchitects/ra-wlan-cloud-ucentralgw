@@ -71,16 +71,13 @@ namespace OpenWifi {
 			if (!TmpName.empty())
 				return false;
 
-			Config::Config Cfg(DefConfig.configuration);
-
-			if (Cfg.Valid()) {
 				Sess.begin();
 				Poco::Data::Statement Insert(Sess);
 
-				std::string St{"INSERT INTO DefaultConfigs ( " + DB_DefConfig_SelectFields +
+				St = "INSERT INTO DefaultConfigs ( " + DB_DefConfig_SelectFields +
 							   " ) "
 							   "VALUES(" +
-							   DB_DefConfig_InsertValues + ")"};
+							   DB_DefConfig_InsertValues + ")";
 
 				DefConfigRecordTuple R;
 				Convert(DefConfig, R);
@@ -88,10 +85,6 @@ namespace OpenWifi {
 				Insert.execute();
 				Sess.commit();
 				return true;
-			} else {
-				poco_warning(Logger(), "Cannot create device: invalid configuration.");
-				return false;
-			}
 		} catch (const Poco::Exception &E) {
 			poco_warning(Logger(), fmt::format("{}: Failed with: {}", std::string(__func__),
 											   E.displayText()));
