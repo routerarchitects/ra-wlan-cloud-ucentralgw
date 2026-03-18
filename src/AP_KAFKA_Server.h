@@ -47,6 +47,7 @@ namespace OpenWifi {
 		bool validateMethod(Poco::JSON::Object::Ptr msg, std::string &serial,const std::string &key);
 		bool recreateConnection(std::shared_ptr<AP_KAFKA_Connection> &KafkaConn, std::string &serial);
 		void InitDbSessions();
+		void HandleGroupIDChange(Poco::JSON::Object::Ptr msg, const std::string &key, const std::string &type);
 		std::shared_ptr<LockedDbSession> NextDbSession();
 
 

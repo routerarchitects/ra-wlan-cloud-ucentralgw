@@ -33,7 +33,7 @@ namespace OpenWifi {
 		void setEssentials(const std::string &IP, const std::string &InfraSerial,
 						   uint64_t InfraGroupId);
 		void setRecreation(GWObjects::Device &DeviceInfo);
-
+		void UpdateGroupID(uint64_t InfraGroupId, const std::string &SerialNumber);
 
 	  private:
 		friend class AP_KAFKA_Server;

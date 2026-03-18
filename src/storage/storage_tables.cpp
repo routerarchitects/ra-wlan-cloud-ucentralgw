@@ -163,8 +163,6 @@ namespace OpenWifi {
 			Script.emplace_back(dbType_ == mysql
 									? "alter table devices add column groupId INT UNSIGNED"
 									: "alter table devices add column groupId BIGINT");
-				"alter table devices add column connectReason TEXT"};
-
 			for (const auto &i : Script) {
 				try {
 					Sess << i, Poco::Data::Keywords::now;

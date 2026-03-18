@@ -158,6 +158,9 @@ namespace OpenWifi {
 				if (type == "infra_leave") {
 					return HandleInfraLeave(msg, key);
 				}
+				if ((type == "infrastructure_group_infras_add_response") ||  (type == "infrastructure_group_infras_del_response")) {
+					return HandleGroupIDChange(msg, key, type);
+				}
 				poco_warning(Logger(), fmt::format("Message Type Invalid: {}",type));
 				return;
 			}
@@ -346,5 +349,51 @@ namespace OpenWifi {
 
 	}
 		
+	void AP_KAFKA_Server::HandleGroupIDChange(Poco::JSON::Object::Ptr msg, const std::string &key,const std::string &type) {  
+		if (!msg) {
+			poco_warning(Logger(), fmt::format("Kafka msg: null JSON object. key='{}'", key));
+			return;
+		}
+		std::string InfraSerial;
+		if (msg->has("infra_group_infra") && msg->isArray("infra_group_infra")) {
+			auto Infras = msg->getArray("infra_group_infra");
+			if (Infras != nullptr && !Infras->empty()) {
+				InfraSerial = Infras->getElement<std::string>(0);
+			}
+		}
+		const auto InfraGroupId = msg->has("infra_group_id")? msg->get("infra_group_id").convert<std::uint64_t>() : 0ULL;
+		if (InfraSerial.empty() || InfraGroupId == 0){
+			poco_warning(Logger(), fmt::format("GroupID Change: serials empty or group id missing for serial: {} , group id: {}", InfraSerial, InfraGroupId));
+			return;
+		}
+
+		if (!Utils::NormalizeMac(InfraSerial) || !Utils::ValidSerialNumber(InfraSerial)) {
+			poco_warning(Logger(), fmt::format("Invalid serial: {}", InfraSerial));
+			return;
+		}
+
+		auto serialInt = Utils::SerialNumberToInt(InfraSerial);
+		if (!Connected(serialInt)) {
+			poco_information(Logger(), fmt::format("GroupID Change: Device Not Connected: {}", InfraSerial));
+			return;
+		}
+
+		auto Conn = GetConnection(serialInt);
+		if (!Conn) {
+			poco_information(Logger(), fmt::format("GroupID Change:AP_Connection not found: {}", InfraSerial));
+			return;
+		}
+
+		auto KafkaConn = std::static_pointer_cast<AP_KAFKA_Connection>(Conn);
+		if (!KafkaConn) {
+			poco_warning(Logger(), fmt::format("GroupID Change: connection type mismatch for {}", InfraSerial));
+			return;
+		}
+		
+		const auto GroupId = type == "infrastructure_group_infras_del_response" ? 0ULL : InfraGroupId;
+
+		KafkaConn->UpdateGroupID(GroupId, InfraSerial);
+	
+	}
 
 } // namespace OpenWifi

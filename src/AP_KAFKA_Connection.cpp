@@ -142,6 +142,32 @@ namespace OpenWifi {
 		
 	}
 
+	void AP_KAFKA_Connection::UpdateGroupID(uint64_t InfraGroupId, const std::string &SerialNumber) {
+		{
+			std::lock_guard G(ConnectionMutex_);
+			if (InfraGroupId_ == InfraGroupId)
+				return;
+			InfraGroupId_ = InfraGroupId;
+		}
+
+		GWObjects::Device deviceInfo;
+		if (!StorageService()->GetDevice(SerialNumber, deviceInfo)) {
+			poco_warning(Logger_, fmt::format("Group ID update skipped: device {} not found in storage.",
+											  SerialNumber));
+			return;
+		}
+
+		deviceInfo.infraGroupId = InfraGroupId;
+		if (!StorageService()->UpdateDevice(deviceInfo)) {
+			poco_warning(Logger_, fmt::format("Group ID update failed to persist for {}: new group id: {}",
+											  SerialNumber, InfraGroupId));
+			return;
+		}
+
+		poco_information(Logger_, fmt::format("Group ID updated for {}: new group id: {}",
+											  SerialNumber, InfraGroupId));
+	}
+
 	void AP_KAFKA_Connection::setRecreation(GWObjects::Device &DeviceInfo){
 			Restrictions_ = DeviceInfo.restrictionDetails;
 			Simulated_ = DeviceInfo.simulated;
