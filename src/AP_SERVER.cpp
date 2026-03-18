@@ -265,11 +265,11 @@ namespace OpenWifi {
 		{
 			auto hashIndex = MACHash::Hash(SerialNumber);
 			std::lock_guard DeviceLock(SerialNumbersMutex_[hashIndex]);
-			auto Device = SerialNumbers_[hashIndex].find(SerialNumber);
-			if (Device == end(SerialNumbers_[hashIndex]) || Device->second == nullptr) {
+			auto DeviceHint = SerialNumbers_[hashIndex].find(SerialNumber);
+			if (DeviceHint == end(SerialNumbers_[hashIndex]) || DeviceHint->second == nullptr) {
 				return;
 			}
-			Connection = Device->second;
+			Connection = DeviceHint->second;
 		}
 		Connection->SetWebSocketTelemetryReporting(RPCID, Interval, Lifetime, TelemetryTypes);
 	}
@@ -281,11 +281,11 @@ namespace OpenWifi {
 		{
 			auto hashIndex = MACHash::Hash(SerialNumber);
 			std::lock_guard DeviceLock(SerialNumbersMutex_[hashIndex]);
-			auto Device = SerialNumbers_[hashIndex].find(SerialNumber);
-			if (Device == end(SerialNumbers_[hashIndex]) || Device->second == nullptr) {
+			auto DeviceHint = SerialNumbers_[hashIndex].find(SerialNumber);
+			if (DeviceHint == end(SerialNumbers_[hashIndex]) || DeviceHint->second == nullptr) {
 				return;
 			}
-			Connection = Device->second;
+			Connection = DeviceHint->second;
 		}
 		Connection->SetKafkaTelemetryReporting(RPCID, Interval, Lifetime, TelemetryTypes);
 	}
@@ -294,12 +294,12 @@ namespace OpenWifi {
 		std::shared_ptr<AP_Connection> Connection;
 		{
 			auto hashIndex = MACHash::Hash(SerialNumber);
-			std::lock_guard DeviceLock(SerialNumbersMutex_[hashIndex]);
-			auto Device = SerialNumbers_[hashIndex].find(SerialNumber);
-			if (Device == end(SerialNumbers_[hashIndex]) || Device->second == nullptr) {
+			std::lock_guard DevicesLock(SerialNumbersMutex_[hashIndex]);
+			auto DeviceHint = SerialNumbers_[hashIndex].find(SerialNumber);
+			if (DeviceHint == end(SerialNumbers_[hashIndex]) || DeviceHint->second == nullptr) {
 				return;
 			}
-			Connection = Device->second;
+			Connection = DeviceHint->second;
 		}
 		Connection->StopKafkaTelemetry(RPCID);
 	}
@@ -315,12 +315,12 @@ namespace OpenWifi {
 		std::shared_ptr<AP_Connection> Connection;
 		{
 			auto hashIndex = MACHash::Hash(SerialNumber);
-			std::lock_guard DeviceLock(SerialNumbersMutex_[hashIndex]);
-			auto Device = SerialNumbers_[hashIndex].find(SerialNumber);
-			if (Device == end(SerialNumbers_[hashIndex]) || Device->second == nullptr) {
+			std::lock_guard DevicesLock(SerialNumbersMutex_[hashIndex]);
+			auto DeviceHint = SerialNumbers_[hashIndex].find(SerialNumber);
+			if (DeviceHint == end(SerialNumbers_[hashIndex]) || DeviceHint->second == nullptr) {
 				return;
 			}
-			Connection = Device->second;
+			Connection = DeviceHint->second;
 		}
 		Connection->GetTelemetryParameters(TelemetryRunning, TelemetryInterval,
 										   TelemetryWebSocketTimer, TelemetryKafkaTimer,
@@ -330,42 +330,68 @@ namespace OpenWifi {
 
 	bool AP_Server::SendRadiusAccountingData(const std::string &SerialNumber,
 											 const unsigned char *buffer, std::size_t size) {
-		auto IntSerialNumber = Utils::SerialNumberToInt(SerialNumber);
-		auto hashIndex = MACHash::Hash(IntSerialNumber);
 		std::shared_ptr<AP_Connection> Connection;
 		{
-			std::lock_guard DeviceLock(SerialNumbersMutex_[hashIndex]);
+			auto IntSerialNumber = Utils::SerialNumberToInt(SerialNumber);
+			auto hashIndex = MACHash::Hash(IntSerialNumber);
+			std::lock_guard DevicesLock(SerialNumbersMutex_[hashIndex]);
 			auto DeviceHint = SerialNumbers_[hashIndex].find(IntSerialNumber);
 			if (DeviceHint == end(SerialNumbers_[hashIndex]) || DeviceHint->second == nullptr) {
 				return false;
 			}
 			Connection = DeviceHint->second;
 		}
-		return Connection->SendRadiusAccountingData(buffer, size);
+
+		if(Connection->Dead_) {
+			return false;
+		}
+
+		try {
+			return Connection->SendRadiusAccountingData(buffer, size);
+		} catch (...) {
+			poco_debug(
+				Logger(),
+				fmt::format(": SendRadiusAccountingData: Could not send data to device '{}'",
+							SerialNumber));
+		}
+		return false;
 	}
 
 	bool AP_Server::SendRadiusAuthenticationData(const std::string &SerialNumber,
 												 const unsigned char *buffer, std::size_t size) {
-		auto IntSerialNumber = Utils::SerialNumberToInt(SerialNumber);
-		auto hashIndex = MACHash::Hash(IntSerialNumber);
 		std::shared_ptr<AP_Connection> Connection;
 		{
-			std::lock_guard DeviceLock(SerialNumbersMutex_[hashIndex]);
+			auto IntSerialNumber = Utils::SerialNumberToInt(SerialNumber);
+			auto hashIndex = MACHash::Hash(IntSerialNumber);
+			std::lock_guard DevicesLock(SerialNumbersMutex_[hashIndex]);
 			auto DeviceHint = SerialNumbers_[hashIndex].find(IntSerialNumber);
 			if (DeviceHint == end(SerialNumbers_[hashIndex]) || DeviceHint->second == nullptr) {
 				return false;
 			}
 			Connection = DeviceHint->second;
 		}
-		return Connection->SendRadiusAuthenticationData(buffer, size);
+
+		if(Connection->Dead_) {
+			return false;
+		}
+
+		try {
+			return Connection->SendRadiusAuthenticationData(buffer, size);
+		} catch (...) {
+			poco_debug(
+				Logger(),
+				fmt::format(": SendRadiusAuthenticationData: Could not send data to device '{}'",
+							SerialNumber));
+		}
+		return false;
 	}
 
 	bool AP_Server::SendRadiusCoAData(const std::string &SerialNumber,
 									  const unsigned char *buffer, std::size_t size) {
-		auto IntSerialNumber = Utils::SerialNumberToInt(SerialNumber);
-		auto hashIndex = MACHash::Hash(IntSerialNumber);
 		std::shared_ptr<AP_Connection> Connection;
 		{
+		auto IntSerialNumber = Utils::SerialNumberToInt(SerialNumber);
+			auto hashIndex = MACHash::Hash(IntSerialNumber);
 			std::lock_guard DeviceLock(SerialNumbersMutex_[hashIndex]);
 			auto DeviceHint = SerialNumbers_[hashIndex].find(IntSerialNumber);
 			if (DeviceHint == end(SerialNumbers_[hashIndex]) || DeviceHint->second == nullptr) {
@@ -373,7 +399,18 @@ namespace OpenWifi {
 			}
 			Connection = DeviceHint->second;
 		}
-		return Connection->SendRadiusCoAData(buffer, size);
+
+		if(Connection->Dead_) {
+			return false;
+		}
+		try {
+			return Connection->SendRadiusCoAData(buffer, size);
+		} catch (...) {
+			poco_debug(Logger(),
+					   fmt::format(": SendRadiusCoAData: Could not send data to device '{}'",
+								   SerialNumber));
+		}
+		return false;
 	}
 
 } // namespace OpenWifi
