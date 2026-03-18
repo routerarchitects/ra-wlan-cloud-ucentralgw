@@ -948,7 +948,8 @@ namespace OpenWifi {
 				// retrieve capabilities and encode/compress parameters, if required
 				Poco::JSON::Object ConfigParams = Params;
 				GWObjects::Capabilities Caps;
-				if (StorageService()->GetDeviceCapabilities(SerialNumber_, Caps)) {
+				if (GetAPServer()->Name() != "KafkaServer" &&
+					StorageService()->GetDeviceCapabilities(SerialNumber_, Caps)) {
 					Poco::JSON::Object CapsJson;
 					Caps.to_json(CapsJson);
 					auto DeviceCaps = CapsJson.getObject(uCentralProtocol::CAPABILITIES);

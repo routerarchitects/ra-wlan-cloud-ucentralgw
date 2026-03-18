@@ -92,9 +92,9 @@ namespace OpenWifi {
 		std::shared_ptr<promise_type_t>
 		PostCommand(uint64_t RPC_ID, APCommands::Commands Command, const std::string &SerialNumber,
 					const std::string &Method, const Poco::JSON::Object &Params,
-					const std::string &UUID, bool &Sent, bool rpc, bool Deferred) {
+					const std::string &UUID, bool &Sent, bool rpc, bool Deferred,std::chrono::milliseconds WaitTimeInMs = std::chrono::milliseconds{30000}) {
 			return PostCommand(RPC_ID, Command, SerialNumber, Method, Params, UUID, false, false,
-							   Sent, rpc, Deferred);
+							   Sent, rpc, Deferred, WaitTimeInMs);
 		}
 
 		std::shared_ptr<promise_type_t>
@@ -184,7 +184,7 @@ namespace OpenWifi {
 		PostCommand(uint64_t RPCID, APCommands::Commands Command, const std::string &SerialNumber,
 					const std::string &Method, const Poco::JSON::Object &Params,
 					const std::string &UUID, bool oneway_rpc, bool disk_only, bool &Sent,
-					bool rpc_call, bool Deferred = false);
+					bool rpc_call, bool Deferred = false,std::chrono::milliseconds WaitTimeInMs = std::chrono::milliseconds{30000} );
 
 		bool CompleteScriptCommand(CommandInfo &Command, const Poco::JSON::Object::Ptr &Payload,
 								   std::chrono::duration<double, std::milli> rpc_execution_time);

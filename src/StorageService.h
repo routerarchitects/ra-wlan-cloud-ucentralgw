@@ -140,7 +140,7 @@ namespace OpenWifi {
 		bool CreateDefaultDevice(Poco::Data::Session &Session,std::string &SerialNumber,
 								 const Config::Capabilities &Caps,
 								 std::string &Firmware, const Poco::Net::IPAddress &IPAddress,
-								 bool simulated);
+								 bool simulated, uint64_t infraGroupId,const std::string &ipAddress);
 		bool CreateDevice(Poco::Data::Session &Sess, GWObjects::Device &DeviceDetails);
 
 		bool GetDevice(LockedDbSession &Session, const std::string &SerialNumber, GWObjects::Device &);

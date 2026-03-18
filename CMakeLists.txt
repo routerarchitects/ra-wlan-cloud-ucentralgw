@@ -160,6 +160,7 @@ add_executable( owgw
         src/AP_SERVER.cpp src/AP_SERVER.h
         src/AP_ServerProvider.cpp src/AP_ServerProvider.h
         src/AP_Connection.cpp src/AP_Connection.h
+        src/AP_KAFKA_Server.cpp src/AP_KAFKA_Server.h
         src/AP_WS_Server.cpp src/AP_WS_Server.h
         src/StorageService.cpp src/StorageService.h
         src/CommandManager.cpp src/CommandManager.h
@@ -183,6 +184,8 @@ add_executable( owgw
         src/AP_WS_Reactor_Pool.h
         src/AP_WS_Connection.h
         src/AP_WS_Connection.cpp
+        src/AP_KAFKA_Connection.h
+        src/AP_KAFKA_Connection.cpp
         src/TelemetryClient.h src/TelemetryClient.cpp
         src/RESTAPI/RESTAPI_iptocountry_handler.cpp src/RESTAPI/RESTAPI_iptocountry_handler.h
         src/framework/ow_constants.h

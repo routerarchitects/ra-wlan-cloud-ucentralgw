@@ -94,7 +94,9 @@ namespace OpenWifi {
 						"simulated 		BOOLEAN,"
 						"lastRecordedContact 	BIGINT,"
 						"certificateExpiryDate 	BIGINT,"
-						"connectReason 			TEXT"
+						"connectReason 			TEXT,"
+						"groupId 		INT UNSIGNED,"
+						"ipAddress				VARCHAR(45)"
 						",INDEX DeviceOwner (Owner ASC),"
 						"INDEX LocationIndex (Location ASC))",
 					Poco::Data::Keywords::now;
@@ -130,7 +132,9 @@ namespace OpenWifi {
 						"simulated 		BOOLEAN, "
 						"lastRecordedContact 	BIGINT,"
 						"certificateExpiryDate 	BIGINT,"
-						"connectReason 			TEXT"
+						"connectReason 			TEXT,"
+						"groupId 		BIGINT,"
+						"ipAddress				VARCHAR(45)"
 						")",
 					Poco::Data::Keywords::now;
 				Sess << "CREATE INDEX IF NOT EXISTS DeviceOwner ON Devices (Owner ASC)",
@@ -153,8 +157,12 @@ namespace OpenWifi {
 				"alter table devices add column lastRecordedContact bigint",
 				"alter table devices add column simulated boolean",
 				"alter table devices add column certificateExpiryDate bigint",
-				"alter table devices add column connectReason TEXT"};
-
+				"alter table devices add column connectReason TEXT",
+				"alter table devices add column ipAddress VARCHAR(45)"
+			};
+			Script.emplace_back(dbType_ == mysql
+									? "alter table devices add column groupId INT UNSIGNED"
+									: "alter table devices add column groupId BIGINT");
 			for (const auto &i : Script) {
 				try {
 					Sess << i, Poco::Data::Keywords::now;

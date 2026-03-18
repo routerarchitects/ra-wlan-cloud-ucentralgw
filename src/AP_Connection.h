@@ -40,7 +40,7 @@ namespace OpenWifi {
 		virtual void EndConnection() = 0;
 		[[nodiscard]] virtual bool ValidatedDevice() = 0;
 		virtual void ProcessIncomingFrame() = 0;
-		[[nodiscard]] virtual bool Send(const std::string &Payload) = 0;
+		[[nodiscard]] virtual bool Send(const std::string &Payload,std::chrono::milliseconds WaitTimeInMs = std::chrono::milliseconds{30000}) = 0;
 
 		void ProcessJSONRPCEvent(Poco::JSON::Object::Ptr &Doc);
 		void ProcessJSONRPCResult(Poco::JSON::Object::Ptr Doc);
@@ -110,6 +110,7 @@ namespace OpenWifi {
 
 		friend class AP_Server;
 		friend class AP_WS_Server;
+		friend class AP_KAFKA_Server;
 
 	  protected:
 		AP_Connection(Poco::Logger &L, std::shared_ptr<LockedDbSession> session,
@@ -156,6 +157,7 @@ namespace OpenWifi {
 		bool hasGPS_ = false;
 		std::double_t memory_used_ = 0.0, cpu_load_ = 0.0, temperature_ = 0.0;
 		std::uint64_t uuid_ = 0;
+		uint64_t InfraGroupId_ = 0;
 		bool Simulated_ = false;
 		std::atomic_uint64_t LastContact_ = 0;
 

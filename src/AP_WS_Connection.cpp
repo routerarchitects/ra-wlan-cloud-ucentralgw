@@ -532,7 +532,7 @@ namespace OpenWifi {
 		EndConnection();
 	}
 
-	bool AP_WS_Connection::Send(const std::string &Payload) {
+	bool AP_WS_Connection::Send(const std::string &Payload,std::chrono::milliseconds WaitTimeInMs ) {
 		try {
 			size_t BytesSent = WS_->sendFrame(Payload.c_str(), (int)Payload.size());
 

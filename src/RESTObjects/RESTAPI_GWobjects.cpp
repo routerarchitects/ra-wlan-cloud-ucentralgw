@@ -56,6 +56,7 @@ namespace OpenWifi::GWObjects {
 		field_to_json(Obj, "devicePassword", DevicePassword);
 		field_to_json(Obj, "subscriber", subscriber);
 		field_to_json(Obj, "entity", entity);
+		field_to_json(Obj, "infraGroupId", infraGroupId);
 		field_to_json(Obj, "modified", modified);
 		field_to_json(Obj, "locale", locale);
 		field_to_json(Obj, "restrictedDevice", restrictedDevice);
@@ -67,6 +68,7 @@ namespace OpenWifi::GWObjects {
 		field_to_json(Obj, "lastRecordedContact", lastRecordedContact);
 		field_to_json(Obj, "certificateExpiryDate", certificateExpiryDate);
 		field_to_json(Obj, "connectReason", connectReason);
+		field_to_json(Obj, "ipAddress", ipAddress);
 	}
 
 	void Device::to_json_with_status(Poco::JSON::Object &Obj) const {
@@ -126,6 +128,7 @@ namespace OpenWifi::GWObjects {
 			field_from_json(Obj, "devicePassword", DevicePassword);
 			field_from_json(Obj, "subscriber", subscriber);
 			field_from_json(Obj, "entity", entity);
+			field_from_json(Obj, "infraGroupId", infraGroupId);
 			field_from_json(Obj, "modified", modified);
 			field_from_json(Obj, "locale", locale);
 			field_from_json(Obj, "restrictedDevice", restrictedDevice);
@@ -137,6 +140,7 @@ namespace OpenWifi::GWObjects {
 			field_from_json(Obj, "lastRecordedContact", lastRecordedContact);
 			field_from_json(Obj, "certificateExpiryDate", certificateExpiryDate);
 			field_from_json(Obj, "connectReason", connectReason);
+			field_from_json(Obj, "ipAddress", ipAddress);
 			return true;
 		} catch (const Poco::Exception &E) {
 		}

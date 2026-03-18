@@ -47,7 +47,6 @@ namespace OpenWifi {
 		bool ValidateCertificate(const std::string &ConnectionId,
 								 const Poco::Crypto::X509Certificate &Certificate);
 
-		void run() override; // Garbage collector thread.
 		
 		[[nodiscard]] inline std::pair<std::shared_ptr<Poco::Net::SocketReactor>,
 									   std::shared_ptr<LockedDbSession>>
@@ -63,9 +62,6 @@ namespace OpenWifi {
 		Poco::Net::SocketReactor Reactor_;
 		Poco::Thread ReactorThread_;
 		std::unique_ptr<AP_WS_ReactorThreadPool> Reactor_pool_;
-
-		Poco::Thread CleanupThread_;
-		Poco::Thread GarbageCollector_;
 
 		AP_WS_Server() noexcept
 			: AP_Server("WebSocketServer", "WS-SVR", "ucentral.websocket") {}

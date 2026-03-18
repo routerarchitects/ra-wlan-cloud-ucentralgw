@@ -22,6 +22,10 @@
 #include "RESTObjects/RESTAPI_GWobjects.h"
 #include "framework/SubSystemServer.h"
 #include "framework/utils.h"
+#include "framework/MicroServiceFuncs.h"
+#include "UI_GW_WebSocketNotifications.h"
+#include "framework/KafkaManager.h"
+#include "framework/KafkaTopics.h"
 
 namespace OpenWifi {
 
@@ -60,6 +64,7 @@ namespace OpenWifi {
 	class AP_Server : public SubSystemServer, public Poco::Runnable {
 	  public:
 		virtual ~AP_Server();
+		void run() override;
 		virtual bool ValidateCertificate(const std::string &ConnectionId,
 										   const Poco::Crypto::X509Certificate &Certificate)=0;
 		bool GetHealthDevices(std::uint64_t lowLimit, std::uint64_t highLimit,
@@ -96,9 +101,20 @@ namespace OpenWifi {
 			return Connected(Utils::SerialNumberToInt(SerialNumber));
 		}
 
-		bool SendFrame(uint64_t SerialNumber, const std::string &Payload) const;
-		inline bool SendFrame(const std::string &SerialNumber, const std::string &Payload) const {
-			return SendFrame(Utils::SerialNumberToInt(SerialNumber), Payload);
+		bool SendFrame(uint64_t SerialNumber, const std::string &Payload,std::chrono::milliseconds WaitTimeInMs) const;
+		inline bool SendFrame(const std::string &SerialNumber, const std::string &Payload,std::chrono::milliseconds WaitTimeInMs = std::chrono::milliseconds{30000}) const {
+			return SendFrame(Utils::SerialNumberToInt(SerialNumber), Payload,WaitTimeInMs);
+		}
+
+		[[nodiscard]] inline std::shared_ptr<AP_Connection>
+		GetConnection(uint64_t SerialNumber) const {
+			auto hashIndex = MACHash::Hash(SerialNumber);
+			std::lock_guard DeviceLock(SerialNumbersMutex_[hashIndex]);
+			auto it = SerialNumbers_[hashIndex].find(SerialNumber);
+			if (it == end(SerialNumbers_[hashIndex])) {
+				return nullptr;
+			}
+			return it->second;
 		}
 
 		void SetWebSocketTelemetryReporting(uint64_t RPCID, uint64_t SerialNumber,
@@ -191,7 +207,9 @@ namespace OpenWifi {
 	  protected:
 		explicit AP_Server(const std::string &Name, const std::string &ShortName,
 						   const std::string &SubSystem);
-
+		
+		void ReadEnvironment();
+		void SetJanitor(const std::string &garbageName);
 		using SerialNumberMap = std::map<uint64_t, std::shared_ptr<AP_Connection>>;
 
 		std::array<std::mutex, SessionHashMax> SessionMutex_;
@@ -220,7 +238,9 @@ namespace OpenWifi {
 		bool SimulatorEnabled_ = false;
 		bool AllowSerialNumberMismatch_ = true;
 		std::uint64_t MismatchDepth_ = 2;
-
+		Poco::Thread CleanupThread_;
+		Poco::Thread GarbageCollector_;
+		std::string GarbageCollectorName;
 	};
 
 } // namespace OpenWifi

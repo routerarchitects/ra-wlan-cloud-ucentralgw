@@ -411,7 +411,7 @@ namespace OpenWifi {
 	std::shared_ptr<CommandManager::promise_type_t> CommandManager::PostCommand(
 		uint64_t RPC_ID, APCommands::Commands Command, const std::string &SerialNumber,
 		const std::string &CommandStr, const Poco::JSON::Object &Params, const std::string &UUID,
-		bool oneway_rpc, [[maybe_unused]] bool disk_only, bool &Sent, bool rpc, bool Deferred) {
+		bool oneway_rpc, [[maybe_unused]] bool disk_only, bool &Sent, bool rpc, bool Deferred,std::chrono::milliseconds WaitTimeInMs) {
 
 		auto SerialNumberInt = Utils::SerialNumberToInt(SerialNumber);
 		Sent = false;
@@ -446,7 +446,7 @@ namespace OpenWifi {
 			std::lock_guard M(Mutex_);
 			OutStandingRequests_[RPC_ID] = CInfo;
 		}
-		if (GetAPServer()->SendFrame(SerialNumber, ToSend.str())) {
+		if (GetAPServer()->SendFrame(SerialNumber, ToSend.str(), WaitTimeInMs)) {
 			poco_debug(Logger(), fmt::format("{}: Sent command. ID: {}", UUID, RPC_ID));
 			Sent = true;
 			return CInfo.rpc_entry;

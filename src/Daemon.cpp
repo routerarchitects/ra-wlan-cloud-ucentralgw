@@ -21,6 +21,7 @@
 #include <framework/default_device_types.h>
 
 #include "AP_ServerProvider.h"
+#include "AP_KAFKA_Server.h"
 #include "AP_WS_Server.h"
 #include "CommandManager.h"
 #include "Daemon.h"
@@ -44,20 +45,42 @@
 #include "firmware_revision_cache.h"
 
 namespace OpenWifi {
+
+	static SubSystemVec GetDaemonSubSystems() {
+		SubSystemVec V = {GenericScheduler(),
+						  StorageService(),
+						  SerialNumberCache(),
+						  ConfigurationValidator(),
+						  UI_WebSocketClientServer(),
+						  OUIServer(),
+						  FindCountryFromIP(),
+						  CommandManager(),
+						  FileUploader(),
+						  StorageArchiver(),
+						  TelemetryStream(),
+						  RTTYS_server(),
+						  RADIUS_proxy_server(),
+						  VenueBroadcaster(),
+						  ScriptManager(),
+						  SignatureManager(),
+						  RegulatoryInfo(),
+						  RADIUSSessionTracker(),
+						  AP_WS_ConfigAutoUpgradeAgent(),
+						  FirmwareRevisionCache()};
+
+		std::string SvrType = Poco::Environment::get("OPENWIFI_SERVER_TYPE", "websocket");
+		if (SvrType == "kafka") {
+			V.push_back(AP_KAFKA_Server());
+		} else {
+			V.push_back(AP_WS_Server());
+		}
+		return V;
+	}
 	class Daemon *Daemon::instance() {
 		static Daemon instance(
 			vDAEMON_PROPERTIES_FILENAME, vDAEMON_ROOT_ENV_VAR, vDAEMON_CONFIG_ENV_VAR,
 			vDAEMON_APP_NAME, vDAEMON_BUS_TIMER,
-			SubSystemVec{GenericScheduler(), StorageService(), SerialNumberCache(), ConfigurationValidator(),
-				UI_WebSocketClientServer(), OUIServer(), FindCountryFromIP(),
-				CommandManager(), FileUploader(), StorageArchiver(), TelemetryStream(),
-				RTTYS_server(), RADIUS_proxy_server(), VenueBroadcaster(), ScriptManager(),
-				SignatureManager(), AP_WS_Server(),
-				RegulatoryInfo(),
-				RADIUSSessionTracker(),
-			 	AP_WS_ConfigAutoUpgradeAgent(),
-				FirmwareRevisionCache()
-			});
+			GetDaemonSubSystems());
 		return &instance;
 	}
 
@@ -77,7 +100,12 @@ namespace OpenWifi {
 		DeviceTypes_ = DefaultDeviceTypeList;
 		WebSocketProcessor_ = std::make_unique<GwWebSocketClient>(logger());
 		MicroServiceALBCallback(ALBHealthCallback);
-		AP_ServerProvider::Register(AP_WS_Server());
+		std::string SvrType = Poco::Environment::get("OPENWIFI_SERVER_TYPE", "websocket");
+		if (SvrType == "kafka") {
+			AP_ServerProvider::Register(AP_KAFKA_Server());
+		} else {
+			AP_ServerProvider::Register(AP_WS_Server());
+		}
 	}
 
 	[[nodiscard]] std::string Daemon::IdentifyDevice(const std::string &Id) const {

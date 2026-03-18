@@ -60,7 +60,9 @@ namespace OpenWifi {
 												   "simulated,"
 												   "lastRecordedContact,"
 												   "certificateExpiryDate,"
-												   "connectReason "
+												   "connectReason, "
+												   "groupId, "
+												   "ipAddress "
 	};
 
 	const static std::string DB_DeviceUpdateFields{"SerialNumber=?,"
@@ -93,18 +95,20 @@ namespace OpenWifi {
 												   "simulated=?,"
 												   "lastRecordedContact=?, "
 												   "certificateExpiryDate=?,"
-												   "connectReason=? "
+												   "connectReason=?, "
+												   "groupId=?, "
+												   "ipAddress=? "
 	};
 
 	const static std::string DB_DeviceInsertValues{
-		" VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "};
+		" VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "};
 
 	typedef Poco::Tuple<std::string, std::string, std::string, std::string, std::string,
 						std::string, std::string, std::string, std::string, std::string,
 						std::string, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, std::string,
 						std::string, std::string, std::string, uint64_t, std::string, bool,
 						std::string, std::string, std::string, std::uint64_t, bool, std::uint64_t,
-						std::uint64_t, std::string>
+						std::uint64_t, std::string, std::uint64_t, std::string>
 		DeviceRecordTuple;
 	typedef std::vector<DeviceRecordTuple> DeviceRecordList;
 
@@ -141,6 +145,8 @@ namespace OpenWifi {
 		D.lastRecordedContact = R.get<28>();
 		D.certificateExpiryDate = R.get<29>();
 		D.connectReason = R.get<30>();
+		D.infraGroupId = R.get<31>();
+		D.ipAddress = R.get<32>();
 	}
 
 	void ConvertDeviceRecord(const GWObjects::Device &D, DeviceRecordTuple &R) {
@@ -175,6 +181,8 @@ namespace OpenWifi {
 		R.set<28>(D.lastRecordedContact);
 		R.set<29>(D.certificateExpiryDate);
 		R.set<30>(D.connectReason);
+		R.set<31>(D.infraGroupId);
+		R.set<32>(D.ipAddress);
 	}
 
 	bool Storage::GetDeviceCount(uint64_t &Count, const std::string &platform) {
@@ -568,10 +576,10 @@ namespace OpenWifi {
 		return false;
 	}
 
-	bool Storage::CreateDefaultDevice(Poco::Data::Session &Session, std::string &SerialNumber, const Config::Capabilities &Caps,
-									  std::string &Firmware,
-									  const Poco::Net::IPAddress &IPAddress,
-									  bool simulated) {
+	bool Storage::CreateDefaultDevice(Poco::Data::Session &Session, std::string &SerialNumber,
+									  const Config::Capabilities &Caps, std::string &Firmware,
+									  const Poco::Net::IPAddress &IPAddress, bool simulated,
+									  uint64_t infraGroupId,const std::string &ipAddress) {
 
 		GWObjects::Device D;
 
@@ -626,6 +634,8 @@ namespace OpenWifi {
 		D.Manufacturer = Caps.Model();
 		D.Firmware = Firmware;
 		D.simulated = simulated;
+		D.infraGroupId = infraGroupId;
+		D.ipAddress = ipAddress;
 		D.Notes = SecurityObjects::NoteInfoVec{
 			SecurityObjects::NoteInfo{(uint64_t)Utils::Now(), "", "Auto-provisioned."}};
 

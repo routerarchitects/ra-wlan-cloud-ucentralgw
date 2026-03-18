@@ -105,6 +105,7 @@ namespace OpenWifi::GWObjects {
 		std::string DevicePassword;
 		std::string subscriber;
 		std::string entity;
+		uint64_t infraGroupId = 0;
 		uint64_t modified = 0;
 		std::string locale;
 		bool restrictedDevice = false;
@@ -116,6 +117,7 @@ namespace OpenWifi::GWObjects {
 		std::uint64_t 	lastRecordedContact=0;
 		std::uint64_t 	certificateExpiryDate = 0;
 		std::string 	connectReason;
+		std::string 	ipAddress;
 		bool			blackListed=false;
 
 		void to_json(Poco::JSON::Object &Obj) const;
