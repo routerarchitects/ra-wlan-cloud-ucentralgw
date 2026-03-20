@@ -191,4 +191,4 @@ Here is a list of additional OWSDK microservices
 | OWPROV | Provisioning Service | [here](https://github.com/routerarchitects/ra-wlan-cloud-owprov) | [here](https://github.com/routerarchitects/ra-wlan-cloud-owprov/blob/main/openapi/owprov.yaml) |
 | OWANALYTICS | Analytics Service | [here](https://github.com/routerarchitects/ra-wlan-cloud-analytics) | [here](https://github.com/routerarchitects/ra-wlan-cloud-analytics/blob/main/openapi/owanalytics.yaml) |
 | OWSUB | Subscriber Service | [here](https://github.com/routerarchitects/ra-wlan-cloud-userportal) | [here](https://github.com/routerarchitects/ra-wlan-cloud-userportal/blob/main/openapi/userportal.yaml) |
-| NW-Topology | Network Topology Service | [here](https://github.com/routerarchitects/ra-openlan-nw-topology) | [here](https://github.com/routerarchitects/ra-openlan-nw-topology/blob/main/openapi/nwtopology.yaml) |
+| NW-Topology | Network Topology Service | [here](https://github.com/routerarchitects/ra-openlan-nw-topology/tree/nt-service-align-openwifi) | [here](https://github.com/routerarchitects/ra-openlan-nw-topology/blob/nt-service-align-openwifi/openapi/nwtopology.yaml) |
