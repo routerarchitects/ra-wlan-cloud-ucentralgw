@@ -155,6 +155,9 @@ namespace OpenWifi {
 				if (type == "infra_join") {
 					return HandleInfraJoin(msg, key);
 				}
+				if (type == "infra_ping") {
+					return HandleInfraPing(msg, key);
+				}
 				if (type == "infra_leave") {
 					return HandleInfraLeave(msg, key);
 				}
@@ -248,6 +251,67 @@ namespace OpenWifi {
 		poco_trace(Logger(),
 						 fmt::format("Infra_join: connected {} session={} key='{}'", serial, sessionId,
 									 key));
+	}
+
+	void AP_KAFKA_Server::HandleInfraPing(Poco::JSON::Object::Ptr msg, const std::string &key) {
+		if (!msg->has("ping_message_payload")) {
+			poco_warning(Logger(), "Infra_ping missing 'ping_message_payload'.");
+			return;
+		}
+
+		auto PingPayload = msg->get("ping_message_payload").toString();
+		auto IP = msg->has("infra_public_ip") ? msg->get("infra_public_ip").toString() : "";
+		auto InfraSerial = msg->has("infra_group_infra") ? msg->get("infra_group_infra").toString() : "";
+
+		if (PingPayload.empty() || InfraSerial.empty()) {
+			poco_warning(Logger(), fmt::format("Infra_ping empty field pingPayload: {} InfraSerial:{}", PingPayload, InfraSerial));
+			return;
+		}
+
+		if (!Utils::NormalizeMac(InfraSerial) || !Utils::ValidSerialNumber(InfraSerial)) {
+			poco_warning(Logger(), fmt::format("Infra_ping Invalid infra_group_infra: {}", InfraSerial));
+			return;
+		}
+
+		Poco::JSON::Parser parser;
+		auto pingParsed = parser.parse(PingPayload).extract<Poco::JSON::Object::Ptr>();
+		if (!pingParsed || !pingParsed->has(uCentralProtocol::METHOD) ||
+				Poco::icompare(pingParsed->get(uCentralProtocol::METHOD).toString(), uCentralProtocol::PING) != 0) {
+			poco_warning(Logger(), "Infra_ping has invalid 'ping_message_payload' method.");
+			return;
+		}
+
+		Poco::JSON::Object::Ptr params;
+		if (!pingParsed->isObject(uCentralProtocol::PARAMS) ||
+			!(params = pingParsed->getObject(uCentralProtocol::PARAMS)) || params->size() == 0) {
+			poco_warning(Logger(), "Infra_ping has invalid 'ping_message_payload' params.");
+			return;
+		}
+
+		if (!params->has(uCentralProtocol::SERIAL)) {
+			poco_warning(Logger(), "Infra_ping payload missing params.serial.");
+			return;
+		}
+
+		auto serial = Poco::trim(Poco::toLower(params->get(uCentralProtocol::SERIAL).toString()));
+		if (!Utils::NormalizeMac(serial) || !Utils::ValidSerialNumber(serial)) {
+			poco_warning(Logger(), fmt::format("Infra_ping Invalid serial: {}", serial));
+			return;
+		}
+
+		if (InfraSerial != serial) {
+			poco_warning(Logger(), fmt::format("Infra_ping serial mismatch: infra='{}' ping='{}'", InfraSerial, serial));
+			return;
+		}
+
+		params->set(uCentralProtocol::SERIAL, serial);
+		if (!params->has(uCentralProtocol::CONNECTIONIP) && !IP.empty()) {
+			params->set(uCentralProtocol::CONNECTIONIP, serial + "@" + IP);
+		}
+
+		std::ostringstream normalizedPayload;
+		pingParsed->stringify(normalizedPayload);
+		HandleDeviceMessage(pingParsed, key, normalizedPayload.str());
 	}
 
 	void AP_KAFKA_Server::InitDbSessions() {
