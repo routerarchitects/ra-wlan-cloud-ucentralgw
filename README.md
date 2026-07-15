@@ -18,7 +18,7 @@ Within Mango Cloud, **OWGW** acts as the core **Gateway / Controller Service** (
 
 Key integrations include:
 * **Device Control Plane**: Handles secure WebSocket connections (defaulting to port `15002`) from OpenWiFi Access Points, OpenLAN Switches, and Gateways.
-* **UI Orchestration**: Exposes a REST API (defaulting to port `16002`) and RTTY shell ports (`5912` / `5913`) for remote terminal management via the controller Web UI (`owgw-ui`).
+* **UI Orchestration**: Exposes a REST API on port `16002` and RTTY services on ports `5912` and `5913` for remote terminal management through `owgw-ui`.
 * **Configuration Sync**: Receives computed configuration files from the Provisioning Service (`owprov`) and applies them to active devices.
 * **Telemetry Pipeline**: Streams device logs, health checks, stats, and Wi-Fi scan results to the Analytics Service (`owanalytics`) and message broker (Kafka).
 
@@ -177,8 +177,8 @@ Depending on your deployment, ensure that firewalls allow traffic on the followi
 | **17002** | Internal REST API Access for intra-microservice communication | yes |
 | **16003** | File uploader server endpoint | yes |
 | **16102** | Application Load Balancer (ALB) health check endpoint | yes |
-| **5912** | Default port for RTTY connection | yes |
-| **5913** | Default viewport for RTTY connection | yes |
+| **5912** | RTTY server connection port | yes |
+| **5913** | RTTY viewport service port | yes |
 
 ## Kafka topics
 To read more about Kafka, follow the [document](https://github.com/routerarchitects/ra-wlan-cloud-ucentralgw/blob/main/KAFKA.md)
