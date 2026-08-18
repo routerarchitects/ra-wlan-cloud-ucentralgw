@@ -4,15 +4,33 @@
   <img src="images/project/mango-logo.png" height="90" align="middle" alt="Mango Cloud Logo" />
 </p>
 
-# OpenWiFi Gateway (OWGW)
+# OpenWiFi Gateway (OWGW) — Mango Cloud Controller Service
 
-## Overview
-The OpenWiFi Gateway (OWGW) is a core controller service within the Telecom Infra Project (TIP) OpenWiFi CloudSDK (OWSDK) ecosystem. 
+The OpenWiFi Gateway (OWGW) is the core device-controller service used by
+[Mango Cloud](https://www.mangowifi.cloud/), Router Architects’ open-source
+OpenLAN/OpenWiFi platform for managed Wi-Fi and connectivity operations.
 
-OWGW manages Access Points, Switches, and Gateways that implement the OpenWiFi uCentral protocol. OWGW, like all other OWSDK microservices, is defined using an OpenAPI definition and uses the uCentral WebSocket communication protocol to interact with devices. To use the OWGW, you can either [build it from source](#building) or deploy the containerized version using [Docker](#docker).
+OWGW is based on the Telecom Infra Project (TIP) OpenWiFi CloudSDK and manages
+OpenWiFi access points, OpenLAN switches, and gateways using the uCentral
+protocol.
+To use the OWGW, you can either [build it from source](#building) or deploy the containerized version using [Docker](#docker).
 
-## Role in Mango Cloud
-This service is part of [Mango Cloud](https://www.mangowifi.cloud/), Router Architects’ open-source platform for managed Wi-Fi and connectivity operations.
+## OWGW in the Mango Cloud Architecture
+This service is part of [Mango Cloud](https://www.mangowifi.cloud/), Router Architects’ open-source platform built for ISPs, MSPs, Edge AI and IoT service providers.
+
+
+```text
+OpenWiFi APs ─────┐
+                  │
+OpenLAN Switches ─┼── uCentral ──> OWGW
+                  │                  │
+OpenLAN Gateways ─┘                  │
+                                     ├── OWPROV
+                                     ├── Analytics
+                                     ├── Firmware
+                                     ├── Topology
+                                     └── Mango Cloud UI
+```
 
 Within Mango Cloud, **OWGW** acts as the core **Gateway / Controller Service** (backend node `owgw`).
 
@@ -21,6 +39,21 @@ Key integrations include:
 * **UI Orchestration**: Exposes a REST API on port `16002` and RTTY services on ports `5912` and `5913` for remote terminal management through `owgw-ui`.
 * **Configuration Sync**: Receives computed configuration files from the Provisioning Service (`owprov`) and applies them to active devices.
 * **Telemetry Pipeline**: Streams device logs, health checks, stats, and Wi-Fi scan results to the Analytics Service (`owanalytics`) and message broker (Kafka).
+
+## OpenLAN and OpenWiFi
+
+Mango Cloud uses OWGW as the device control plane for OpenLAN/OpenWiFi
+deployments.
+
+The service supports uCentral-based management of compatible:
+
+- OpenWiFi access points
+- OpenLAN switches (OLS)
+- OpenLAN gateways (OLG)
+- Residential and managed Wi-Fi CPE
+
+This allows Mango Cloud to provide a common cloud operations layer across
+multi-vendor Wi-Fi, LAN, and gateway infrastructure.
 
 ### Resources
 * [Mango Cloud Website](https://www.mangowifi.cloud/)
@@ -189,7 +222,7 @@ We need more contributors. Should you wish to contribute, please follow the [con
 ## Pull Requests
 Please create a branch with the Jira addressing the issue you are fixing or the feature you are implementing. Create a pull request from your branch into main. 
 
-## Additional OWSDK Microservices
+## Related Mango Cloud Services
 Here is a list of additional OWSDK microservices:
 | Name | Description | Link | OpenAPI |
 | :--- | :--- | :---: | :---: |
