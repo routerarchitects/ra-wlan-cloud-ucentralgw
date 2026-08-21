@@ -10,6 +10,7 @@
 //	Created by Stephane Bourque on 2021-03-04.
 //	Arilia Wireless Inc.
 //
+#include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -892,6 +893,28 @@ namespace OpenWifi {
 										   Logger_, Cmd.deferred);
 	}
 
+	/*
+		CompareConfigs():
+		1. Parse storedConfig and newConfig as JSON.
+		2. Remove top-level "uuid" from both objects (ignore UUID-only changes).
+		3. Return true if the remaining JSON structures are equal.
+	*/
+	static bool CompareConfigs(const std::string &storedConfig, const std::string &newConfig) {
+		try {
+			auto a = nlohmann::json::parse(storedConfig);
+			auto b = nlohmann::json::parse(newConfig);
+
+			if (a.is_object())
+				a.erase("uuid");
+			if (b.is_object())
+				b.erase("uuid");
+
+			return a == b;
+		} catch (...) {
+			return false;
+		}
+	}
+
 	void RESTAPI_device_commandHandler::Configure(
 		const std::string &CMD_UUID, uint64_t CMD_RPC, std::chrono::milliseconds timeout,
 		[[maybe_unused]] const GWObjects::DeviceRestrictions &Restrictions) {
@@ -920,6 +943,12 @@ namespace OpenWifi {
 											   GetBoolParameter("strict", false))) {
 				CallCanceled("CONFIGURE", CMD_UUID, CMD_RPC, RESTAPI::Errors::ConfigBlockInvalid);
 				return BadRequest(RESTAPI::Errors::ConfigBlockInvalid, Error);
+			}
+
+			if (CompareConfigs(DeviceInfo.Configuration, Configuration)) {
+				poco_information(Logger_, "Configuration unchanged, skipping configure command.");
+				CallCanceled("CONFIGURE", RESTAPI::Errors::RecordNotUpdated, "Configuration unchanged");
+				return BadRequest(RESTAPI::Errors::RecordNotUpdated, "Configuration unchanged");
 			}
 
 			auto When = GetWhen(Obj);
