@@ -141,11 +141,65 @@ namespace OpenWifi {
 				Command.Executed = Now;
 			}
 
-			if(	Type == CommandExecutionType::COMMAND_COMPLETED ||
+			if (Type == CommandExecutionType::COMMAND_COMPLETED ||
 				Type == CommandExecutionType::COMMAND_TIMEDOUT ||
 				Type == CommandExecutionType::COMMAND_FAILED ||
 				Type == CommandExecutionType::COMMAND_EXPIRED) {
 				Command.Completed = Now;
+			}
+
+			GWObjects::CommandDetails ExistingCmd;
+			// DEBUG ONLY - force TRACE/SCRIPT upload-first ordering
+			// if (Command.Command == uCentralProtocol::TRACE ||
+			// 	Command.Command == uCentralProtocol::SCRIPT) {
+			// 	std::this_thread::sleep_for(std::chrono::seconds(30));
+			// }
+
+			bool Exists = GetCommand(Command.UUID, ExistingCmd);
+
+			if (Exists) {
+				Poco::Data::Session Sess = Pool_->get();
+				Sess.begin();
+				Poco::Data::Statement Update(Sess);
+
+				std::string St{
+					"UPDATE CommandList SET SerialNumber=?, Command=?, Status=?, SubmittedBy=?, "
+					"Results=?, Details=?, ErrorText=?, Submitted=?, Executed=?, Completed=?, "
+					"RunAt=?, ErrorCode=?, Custom=?, executionTime=?, LastTry=?, deferred=? "
+					"WHERE UUID=?"};
+
+				uint64_t Sub = Command.Submitted
+								   ? Command.Submitted
+								   : (ExistingCmd.Submitted ? ExistingCmd.Submitted : Now);
+				uint64_t Exec = Command.Executed ? Command.Executed : ExistingCmd.Executed;
+				uint64_t Comp = Command.Completed ? Command.Completed : ExistingCmd.Completed;
+
+				Update << ConvertParams(St), Poco::Data::Keywords::use(SerialNumber),
+					Poco::Data::Keywords::use(Command.Command),
+					Poco::Data::Keywords::use(Command.Status),
+					Poco::Data::Keywords::use(Command.SubmittedBy),
+					Poco::Data::Keywords::use(Command.Results),
+					Poco::Data::Keywords::use(Command.Details),
+					Poco::Data::Keywords::use(Command.ErrorText), Poco::Data::Keywords::use(Sub),
+					Poco::Data::Keywords::use(Exec), Poco::Data::Keywords::use(Comp),
+					Poco::Data::Keywords::use(Command.RunAt),
+					Poco::Data::Keywords::use(Command.ErrorCode),
+					Poco::Data::Keywords::use(Command.Custom),
+					Poco::Data::Keywords::use(Command.executionTime),
+					Poco::Data::Keywords::use(Command.lastTry),
+					Poco::Data::Keywords::use(Command.deferred),
+					Poco::Data::Keywords::use(Command.UUID);
+
+				Update.execute();
+				Sess.commit();
+
+				if (ExistingCmd.AttachSize > 0 || ExistingCmd.WaitingForFile == 0) {
+					Command.WaitingForFile = ExistingCmd.WaitingForFile;
+					Command.AttachDate = ExistingCmd.AttachDate;
+					Command.AttachSize = ExistingCmd.AttachSize;
+					Command.AttachType = ExistingCmd.AttachType;
+				}
+				return true;
 			}
 
 			RemoveOldCommands(SerialNumber, Command.Command);
@@ -161,9 +215,60 @@ namespace OpenWifi {
 			ConvertCommandRecord(Command, R);
 
 			Insert << ConvertParams(St), Poco::Data::Keywords::use(R);
-			Insert.execute();
-			Sess.commit();
-			return true;
+			try {
+				Insert.execute();
+				Sess.commit();
+				return true;
+			} catch (const Poco::Exception &E) {
+				Sess.rollback();
+				GWObjects::CommandDetails ConcurrentCmd;
+				if (GetCommand(Command.UUID, ConcurrentCmd)) {
+					Poco::Data::Session Sess2 = Pool_->get();
+					Sess2.begin();
+					Poco::Data::Statement Update2(Sess2);
+
+					std::string St2{
+						"UPDATE CommandList SET SerialNumber=?, Command=?, Status=?, "
+						"SubmittedBy=?, "
+						"Results=?, Details=?, ErrorText=?, Submitted=?, Executed=?, Completed=?, "
+						"RunAt=?, ErrorCode=?, Custom=?, executionTime=?, LastTry=?, deferred=? "
+						"WHERE UUID=?"};
+
+					uint64_t Sub = Command.Submitted
+									   ? Command.Submitted
+									   : (ConcurrentCmd.Submitted ? ConcurrentCmd.Submitted : Now);
+					uint64_t Exec = Command.Executed ? Command.Executed : ConcurrentCmd.Executed;
+					uint64_t Comp = Command.Completed ? Command.Completed : ConcurrentCmd.Completed;
+
+					Update2 << ConvertParams(St2), Poco::Data::Keywords::use(SerialNumber),
+						Poco::Data::Keywords::use(Command.Command),
+						Poco::Data::Keywords::use(Command.Status),
+						Poco::Data::Keywords::use(Command.SubmittedBy),
+						Poco::Data::Keywords::use(Command.Results),
+						Poco::Data::Keywords::use(Command.Details),
+						Poco::Data::Keywords::use(Command.ErrorText),
+						Poco::Data::Keywords::use(Sub), Poco::Data::Keywords::use(Exec),
+						Poco::Data::Keywords::use(Comp), Poco::Data::Keywords::use(Command.RunAt),
+						Poco::Data::Keywords::use(Command.ErrorCode),
+						Poco::Data::Keywords::use(Command.Custom),
+						Poco::Data::Keywords::use(Command.executionTime),
+						Poco::Data::Keywords::use(Command.lastTry),
+						Poco::Data::Keywords::use(Command.deferred),
+						Poco::Data::Keywords::use(Command.UUID);
+
+					Update2.execute();
+					Sess2.commit();
+
+					if (ConcurrentCmd.AttachSize > 0 || ConcurrentCmd.WaitingForFile == 0) {
+						Command.WaitingForFile = ConcurrentCmd.WaitingForFile;
+						Command.AttachDate = ConcurrentCmd.AttachDate;
+						Command.AttachSize = ConcurrentCmd.AttachSize;
+						Command.AttachType = ConcurrentCmd.AttachType;
+					}
+					return true;
+				}
+				throw;
+			}
 
 		} catch (const Poco::Exception &E) {
 			Logger().log(E);
@@ -427,6 +532,8 @@ namespace OpenWifi {
 			Select << ConvertParams(St), Poco::Data::Keywords::into(R),
 				Poco::Data::Keywords::use(tmp_uuid);
 			Select.execute();
+			if (Select.rowsExtracted() == 0)
+				return false;
 			ConvertCommandRecord(R, Command);
 			return true;
 		} catch (const Poco::Exception &E) {
@@ -641,12 +748,15 @@ namespace OpenWifi {
 		return false;
 	}
 
-	bool Storage::AttachFileDataToCommand(std::string &UUID, const std::stringstream &FileContent,
-										  const std::string &Type) {
+	bool Storage::AttachFileDataToCommand(const std::string &UUID,
+										  const std::stringstream &FileContent,
+										  const std::string &Type, const std::string &SerialNumber,
+										  const std::string &Command, bool Deferred) {
 		try {
 			auto Now = Utils::Now();
 			uint64_t WaitForFile = 0;
 			uint64_t Size = FileContent.str().size();
+			auto tmp_uuid = UUID;
 
 			Poco::Data::Session Sess = Pool_->get();
 
@@ -663,29 +773,72 @@ namespace OpenWifi {
 				std::string St2{
 					"INSERT INTO FileUploads (UUID,Type,Created,FileContent) VALUES(?,?,?,?)"};
 
-				Insert << ConvertParams(St2), Poco::Data::Keywords::use(UUID),
+				Insert << ConvertParams(St2), Poco::Data::Keywords::use(tmp_uuid),
 					Poco::Data::Keywords::use(FileType), Poco::Data::Keywords::use(Now),
 					Poco::Data::Keywords::use(TheBlob);
 				Insert.execute();
 				Sess.commit();
 			} else {
-				poco_warning(Logger(),
-					fmt::format("File {} is too large ({} >= {} max bytes).",
-						UUID, Size, FileUploader()->MaxSize()));
+				poco_warning(Logger(), fmt::format("File {} is too large ({} >= {} max bytes).",
+												   UUID, Size, FileUploader()->MaxSize()));
 			}
 
 			// update CommandList here to ensure that file us uploaded
 			Sess.begin();
 			Poco::Data::Statement Statement(Sess);
-			std::string StatementStr;
-			StatementStr =
-				"UPDATE CommandList SET WaitingForFile=?, AttachDate=?, AttachSize=? WHERE UUID=?";
+			std::string StatementStr{"UPDATE CommandList SET WaitingForFile=?, AttachDate=?, "
+									 "AttachSize=?, AttachType=? WHERE UUID=?"};
 
+			std::string AttachType = Type;
 			Statement << ConvertParams(StatementStr), Poco::Data::Keywords::use(WaitForFile),
 				Poco::Data::Keywords::use(Now), Poco::Data::Keywords::use(Size),
-				Poco::Data::Keywords::use(UUID);
+				Poco::Data::Keywords::use(AttachType), Poco::Data::Keywords::use(tmp_uuid);
 			Statement.execute();
+			std::size_t Affected = Statement.rowsExtracted();
 			Sess.commit();
+
+			if (Affected == 0 && !SerialNumber.empty()) {
+				GWObjects::CommandDetails TempCmd;
+				TempCmd.UUID = UUID;
+				TempCmd.SerialNumber = SerialNumber;
+				TempCmd.Command = Command.empty() ? uCentralProtocol::TRACE : Command;
+				TempCmd.Status = to_string(CommandExecutionType::COMMAND_EXECUTED);
+				TempCmd.Submitted = Now;
+				TempCmd.Executed = Now;
+				TempCmd.Completed = 0;
+				TempCmd.RunAt = 0;
+				TempCmd.ErrorCode = 0;
+				TempCmd.WaitingForFile = 0;
+				TempCmd.AttachDate = Now;
+				TempCmd.AttachSize = Size;
+				TempCmd.AttachType = Type;
+				TempCmd.lastTry = 0;
+				TempCmd.deferred = Deferred;
+
+				Poco::Data::Session Sess2 = Pool_->get();
+				Sess2.begin();
+				Poco::Data::Statement TempInsert(Sess2);
+				std::string InsertSt{"INSERT INTO CommandList ( " + DB_Command_SelectFields +
+									 " ) VALUES( " + DB_Command_InsertValues + " )"};
+				CommandDetailsRecordTuple R;
+				ConvertCommandRecord(TempCmd, R);
+				TempInsert << ConvertParams(InsertSt), Poco::Data::Keywords::use(R);
+				try {
+					TempInsert.execute();
+					Sess2.commit();
+				} catch (const Poco::Exception &) {
+					Sess2.rollback();
+					Poco::Data::Session Sess3 = Pool_->get();
+					Sess3.begin();
+					Poco::Data::Statement Statement2(Sess3);
+					Statement2 << ConvertParams(StatementStr),
+						Poco::Data::Keywords::use(WaitForFile), Poco::Data::Keywords::use(Now),
+						Poco::Data::Keywords::use(Size), Poco::Data::Keywords::use(AttachType),
+						Poco::Data::Keywords::use(tmp_uuid);
+					Statement2.execute();
+					Sess3.commit();
+				}
+			}
 
 			return true;
 		} catch (const Poco::Exception &E) {
@@ -695,7 +848,8 @@ namespace OpenWifi {
 	}
 
 	bool Storage::GetAttachedFileContent(std::string &UUID, const std::string &SerialNumber,
-										 std::string &FileContent, std::string &Type, int &WaitingForFile) {
+										 std::string &FileContent, std::string &Type,
+										 int &WaitingForFile) {
 		try {
 			Poco::Data::BLOB L;
 			/*
@@ -708,10 +862,12 @@ namespace OpenWifi {
 			Poco::Data::Statement Select1(Sess);
 
 			std::string TmpSerialNumber;
-			std::string st1{"SELECT SerialNumber, Command , WaitingForFile FROM CommandList WHERE UUID=?"};
+			std::string st1{
+				"SELECT SerialNumber, Command , WaitingForFile FROM CommandList WHERE UUID=?"};
 			std::string Command;
 			Select1 << ConvertParams(st1), Poco::Data::Keywords::into(TmpSerialNumber),
-				Poco::Data::Keywords::into(Command), Poco::Data::Keywords::into(WaitingForFile), Poco::Data::Keywords::use(UUID);
+				Poco::Data::Keywords::into(Command), Poco::Data::Keywords::into(WaitingForFile),
+				Poco::Data::Keywords::use(UUID);
 			Select1.execute();
 
 			if (TmpSerialNumber != SerialNumber) {

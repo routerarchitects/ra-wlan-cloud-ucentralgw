@@ -125,7 +125,8 @@ namespace OpenWifi {
 
 	//  if you pass in an empty UUID, it will just clean the list and not add it.
 	bool FileUploader::AddUUID(const std::string &UUID, std::chrono::seconds WaitTimeInSeconds,
-							   const std::string &Type) {
+							   const std::string &Type, const std::string &SerialNumber,
+							   const std::string &Command, bool Deferred) {
 		std::lock_guard Guard(Mutex_);
 
 		uint64_t now = Utils::Now();
@@ -133,7 +134,8 @@ namespace OpenWifi {
 		OutStandingUploads_.erase(
 			std::remove_if(OutStandingUploads_.begin(), OutStandingUploads_.end(), Func),
 			OutStandingUploads_.end());
-		OutStandingUploads_.emplace_back(UploadId{UUID, now + WaitTimeInSeconds.count(), Type});
+		OutStandingUploads_.emplace_back(
+			UploadId{UUID, now + WaitTimeInSeconds.count(), Type, SerialNumber, Command, Deferred});
 		return true;
 	}
 
@@ -186,8 +188,12 @@ namespace OpenWifi {
 
 	class FormRequestHandler : public Poco::Net::HTTPRequestHandler {
 	  public:
-		explicit FormRequestHandler(std::string UUID, Poco::Logger &L, const std::string &Type)
-			: UUID_(std::move(UUID)), Logger_(L), Type_(Type) {}
+		explicit FormRequestHandler(std::string UUID, Poco::Logger &L, const std::string &Type,
+									std::string SerialNumber = "", std::string Command = "",
+									bool Deferred = false)
+			: UUID_(std::move(UUID)), Logger_(L), Type_(Type),
+			  SerialNumber_(std::move(SerialNumber)), Command_(std::move(Command)),
+			  Deferred_(Deferred) {}
 
 		void handleRequest(Poco::Net::HTTPServerRequest &Request,
 						   Poco::Net::HTTPServerResponse &Response) final {
@@ -223,8 +229,8 @@ namespace OpenWifi {
 								Answer.set("filename", UUID_);
 								Answer.set("error", 0);
 								poco_debug(Logger(), fmt::format("{}: File uploaded.", UUID_));
-								StorageService()->AttachFileDataToCommand(UUID_, FileContent,
-																		  Type_);
+								StorageService()->AttachFileDataToCommand(
+									UUID_, FileContent, Type_, SerialNumber_, Command_, Deferred_);
 								std::ostream &ResponseStream = Response.send();
 								Poco::JSON::Stringifier::stringify(Answer, ResponseStream);
 								return;
@@ -261,6 +267,9 @@ namespace OpenWifi {
 		std::string UUID_;
 		Poco::Logger &Logger_;
 		std::string Type_;
+		std::string SerialNumber_;
+		std::string Command_;
+		bool Deferred_ = false;
 	};
 
 	Poco::Net::HTTPRequestHandler *FileUpLoaderRequestHandlerFactory::createRequestHandler(
@@ -288,7 +297,7 @@ namespace OpenWifi {
 			FileUploader::UploadId E;
 			if (FileUploader()->Find(UUID, E)) {
 				FileUploader()->RemoveRequest(UUID);
-				return new FormRequestHandler(UUID, Logger(), E.Type);
+				return new FormRequestHandler(UUID, Logger(), E.Type, E.SerialNumber, E.Command, E.Deferred);
 			} else {
 				poco_warning(Logger(), fmt::format("Unknown UUID={}", UUID));
 			}
