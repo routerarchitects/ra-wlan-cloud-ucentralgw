@@ -40,6 +40,7 @@ namespace OpenWifi {
 
 		void OnKafkaMessage(const std::string &key, const std::string &payload);
 		void HandleInfraJoin(Poco::JSON::Object::Ptr msg, const std::string &key);
+		void HandleInfraPing(Poco::JSON::Object::Ptr msg, const std::string &key);
 		void HandleInfraLeave(Poco::JSON::Object::Ptr msg, const std::string &key);
 		void HandleDeviceMessage(Poco::JSON::Object::Ptr msg, const std::string &key,
 								 const std::string &payload);
