@@ -22,14 +22,15 @@ namespace OpenWifi {
 		~LockedDbSession() = default;
 		inline std::mutex &Mutex() { return *Mutex_; };
 		inline Poco::Data::Session &Session() {
-			if(!Session_->isConnected()) {
+			if (!Session_->isConnected()) {
 				Session_->reconnect();
 			}
 			return *Session_;
 		};
+
 	  private:
-		std::shared_ptr<Poco::Data::Session> 	Session_;
-		std::shared_ptr<std::mutex> 			Mutex_;
+		std::shared_ptr<Poco::Data::Session> Session_;
+		std::shared_ptr<std::mutex> Mutex_;
 	};
 
 	class Storage : public StorageClass {
@@ -130,25 +131,27 @@ namespace OpenWifi {
 		bool UpdateDeviceConfiguration(std::string &SerialNumber, std::string &Configuration,
 									   uint64_t &NewUUID);
 		bool SetPendingDeviceConfiguration(std::string &SerialNumber, std::string &Configuration,
-									   uint64_t &NewUUID);
+										   uint64_t &NewUUID);
 
-		bool RollbackDeviceConfigurationChange(std::string & SerialNumber);
-		bool CompleteDeviceConfigurationChange(Poco::Data::Session &Session, std::string & SerialNumber);
-		bool CompleteDeviceConfigurationChange(std::string & SerialNumber);
+		bool RollbackDeviceConfigurationChange(std::string &SerialNumber);
+		bool CompleteDeviceConfigurationChange(Poco::Data::Session &Session,
+											   std::string &SerialNumber);
+		bool CompleteDeviceConfigurationChange(std::string &SerialNumber);
 		bool CreateDevice(LockedDbSession &Session, GWObjects::Device &);
 		bool CreateDevice(GWObjects::Device &);
-		bool CreateDefaultDevice(Poco::Data::Session &Session,std::string &SerialNumber,
-								 const Config::Capabilities &Caps,
-								 std::string &Firmware, const Poco::Net::IPAddress &IPAddress,
-								 bool simulated, uint64_t infraGroupId,const std::string &ipAddress);
+		bool CreateDefaultDevice(Poco::Data::Session &Session, std::string &SerialNumber,
+								 const Config::Capabilities &Caps, std::string &Firmware,
+								 const Poco::Net::IPAddress &IPAddress, bool simulated,
+								 uint64_t infraGroupId, const std::string &ipAddress);
 		bool CreateDevice(Poco::Data::Session &Sess, GWObjects::Device &DeviceDetails);
 
-		bool GetDevice(LockedDbSession &Session, const std::string &SerialNumber, GWObjects::Device &);
-		bool GetDevice(Poco::Data::Session &Session, const std::string &SerialNumber, GWObjects::Device &DeviceDetails);
+		bool GetDevice(LockedDbSession &Session, const std::string &SerialNumber,
+					   GWObjects::Device &);
+		bool GetDevice(Poco::Data::Session &Session, const std::string &SerialNumber,
+					   GWObjects::Device &DeviceDetails);
 		bool GetDevice(const std::string &SerialNumber, GWObjects::Device &);
 		bool GetDevices(uint64_t From, uint64_t HowMany, std::vector<GWObjects::Device> &Devices,
-						const std::string &orderBy = "",
-						const std::string &platform = "",
+						const std::string &orderBy = "", const std::string &platform = "",
 						bool includeProvisioned = true);
 		//		bool GetDevices(uint64_t From, uint64_t HowMany, const std::string & Select,
 		// std::vector<GWObjects::Device> &Devices, const std::string & orderBy="");
@@ -167,9 +170,10 @@ namespace OpenWifi {
 									std::vector<std::string> &SerialNumbers,
 									const std::string &orderBy = "",
 									const std::string &platform = "",
-									bool includeProvisioned = true);									
+									bool includeProvisioned = true);
 		bool GetDeviceFWUpdatePolicy(std::string &SerialNumber, std::string &Policy);
-		bool SetDevicePassword(LockedDbSession &Session, std::string &SerialNumber, std::string &Password);
+		bool SetDevicePassword(LockedDbSession &Session, std::string &SerialNumber,
+							   std::string &Password);
 		bool UpdateSerialNumberCache();
 		static void GetDeviceDbFieldList(Types::StringVec &Fields);
 
@@ -202,8 +206,7 @@ namespace OpenWifi {
 		bool GetDefaultConfiguration(std::string &name, GWObjects::DefaultConfiguration &DefConfig);
 		bool GetDefaultConfigurations(uint64_t From, uint64_t HowMany,
 									  std::vector<GWObjects::DefaultConfiguration> &Devices);
-		bool FindDefaultConfigurationForModel(const std::string &Model,
-											  const std::string &Platform,
+		bool FindDefaultConfigurationForModel(const std::string &Model, const std::string &Platform,
 											  GWObjects::DefaultConfiguration &DefConfig);
 		uint64_t GetDefaultConfigurationsCount();
 		bool DefaultConfigurationAlreadyExists(std::string &Name);
@@ -213,13 +216,11 @@ namespace OpenWifi {
 		bool DeleteDefaultFirmware(std::string &name);
 		bool GetDefaultFirmware(std::string &name, GWObjects::DefaultFirmware &DefConfig);
 		bool GetDefaultFirmwares(uint64_t From, uint64_t HowMany,
-									  std::vector<GWObjects::DefaultFirmware> &Devices);
+								 std::vector<GWObjects::DefaultFirmware> &Devices);
 		bool FindDefaultFirmwareForModel(const std::string &Model,
-											  GWObjects::DefaultFirmware &DefConfig);
+										 GWObjects::DefaultFirmware &DefConfig);
 		uint64_t GetDefaultFirmwaresCount();
 		bool DefaultFirmwareAlreadyExists(std::string &Name);
-
-
 
 		bool AddCommand(std::string &SerialNumber, GWObjects::CommandDetails &Command,
 						CommandExecutionType Type);
@@ -244,7 +245,8 @@ namespace OpenWifi {
 									 const std::string &Command = "", bool Deferred = false);
 		bool CancelWaitFile(std::string &UUID, std::string &ErrorText);
 		bool GetAttachedFileContent(std::string &UUID, const std::string &SerialNumber,
-									std::string &FileContent, std::string &Type, int& WaitingForFile);
+									std::string &FileContent, std::string &Type,
+									int &WaitingForFile);
 		bool RemoveAttachedFile(std::string &UUID);
 		bool SetCommandResult(std::string &UUID, std::string &Result);
 		bool GetNewestCommands(std::string &SerialNumber, uint64_t HowMany,
@@ -256,14 +258,14 @@ namespace OpenWifi {
 		void RemovedExpiredCommands();
 		void RemoveTimedOutCommands();
 
-		bool RemoveOldCommands(std::string &SerialNumber, std::string &Command);
+		bool RemoveOldCommands(std::string &SerialNumber, std::string &Command, std::string &UUID);
 
 		bool AddBlackListDevices(std::vector<GWObjects::BlackListedDevice> &Devices);
 		bool AddBlackListDevice(GWObjects::BlackListedDevice &Device);
 		bool GetBlackListDevice(std::string &SerialNumber, GWObjects::BlackListedDevice &Device);
 		bool DeleteBlackListDevice(std::string &SerialNumber);
-		bool IsBlackListed(std::uint64_t SerialNumber, std::string &reason,
-						   std::string &author, std::uint64_t &created);
+		bool IsBlackListed(std::uint64_t SerialNumber, std::string &reason, std::string &author,
+						   std::uint64_t &created);
 		bool IsBlackListed(std::uint64_t SerialNumber);
 		bool InitializeBlackListCache();
 		bool GetBlackListDevices(uint64_t Offset, uint64_t HowMany,
@@ -279,10 +281,14 @@ namespace OpenWifi {
 		bool RemoveCommandListRecordsOlderThan(uint64_t Date);
 		bool RemoveUploadedFilesRecordsOlderThan(uint64_t Date);
 
-		bool SetDeviceLastRecordedContact(LockedDbSession &Session, std::string & SerialNumber, std::uint64_t lastRecordedContact);
-		bool SetDeviceLastRecordedContact(std::string & SerialNumber, std::uint64_t lastRecordedContact);
-		bool SetDeviceLastRecordedContact(Poco::Data::Session & Session, std::string & SerialNumber, std::uint64_t lastRecordedContact);
-
+		bool SetDeviceLastRecordedContact(LockedDbSession &Session, std::string &SerialNumber,
+										  std::uint64_t lastRecordedContact);
+		bool SetDeviceLastRecordedContact(std::string &SerialNumber,
+										  std::uint64_t lastRecordedContact);
+		bool SetDeviceLastRecordedContact(Poco::Data::Session &Session, std::string &SerialNumber,
+										  std::uint64_t lastRecordedContact);
+		bool UpdateExistingCommand(std::string &SerialNumber, GWObjects::CommandDetails &Command,
+								   const GWObjects::CommandDetails &ExistingCmd, uint64_t Now);
 		int Create_Tables();
 		int Create_Statistics();
 		int Create_Devices();
@@ -303,9 +309,7 @@ namespace OpenWifi {
 		int Start() override;
 		void Stop() override;
 
-		inline Poco::Data::Session	StartSession() {
-			return Pool_->get();
-		}
+		inline Poco::Data::Session StartSession() { return Pool_->get(); }
 
 	  private:
 		std::unique_ptr<OpenWifi::ScriptDB> ScriptDB_;
@@ -314,7 +318,8 @@ namespace OpenWifi {
 	inline auto StorageService() { return Storage::instance(); }
 
 	inline LockedDbSession::LockedDbSession() {
-		Session_ = std::make_shared<Poco::Data::Session>(Poco::Data::Session(StorageService()->StartSession()));
+		Session_ = std::make_shared<Poco::Data::Session>(
+			Poco::Data::Session(StorageService()->StartSession()));
 		Mutex_ = std::make_shared<std::mutex>();
 	}
 
