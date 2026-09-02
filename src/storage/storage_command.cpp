@@ -199,12 +199,12 @@ namespace OpenWifi {
 
 			bool Exists = GetCommand(Command.UUID, ExistingCmd);
 
+			RemoveOldCommands(SerialNumber, Command.Command, Command.UUID);
+
 			// true, if file response arrived first
 			if (Exists) {
 				return UpdateExistingCommand(SerialNumber, Command, ExistingCmd, Now);
 			}
-
-			RemoveOldCommands(SerialNumber, Command.Command, Command.UUID);
 
 			Poco::Data::Session Sess = Pool_->get();
 			Sess.begin();
