@@ -23,6 +23,9 @@ namespace OpenWifi {
 			std::string UUID;
 			std::uint64_t Expires;
 			std::string Type;
+			std::string SerialNumber;
+			std::string Command;
+			bool Deferred = false;
 		};
 
 		int Start() override;
@@ -30,7 +33,8 @@ namespace OpenWifi {
 		void reinitialize(Poco::Util::Application &self) override;
 		const std::string &FullName();
 		bool AddUUID(const std::string &UUID, std::chrono::seconds WaitTimeInSecond,
-					 const std::string &Type);
+					 const std::string &Type, const std::string &SerialNumber = "",
+					 const std::string &Command = "", bool Deferred = false);
 		bool ValidRequest(const std::string &UUID);
 		void RemoveRequest(const std::string &UUID);
 		const std::string &Path() { return Path_; };
