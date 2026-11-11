@@ -115,7 +115,11 @@ namespace OpenWifi {
 				RTTYMustBeSecure_ = Capabilities->getValue<bool>("secure-rtty");
 			}
 
-			State_.locale = FindCountryFromIP()->Get(IP);
+			if (Capabilities->has("country") && !Capabilities->isNull("country")) {
+				State_.locale = Capabilities->get("country").toString();
+			} else {
+				State_.locale = "";
+			}
 			GWObjects::Device DeviceInfo;
 			std::lock_guard DbSessionLock(DbSession_->Mutex());
 
