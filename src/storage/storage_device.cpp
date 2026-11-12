@@ -579,7 +579,8 @@ namespace OpenWifi {
 	bool Storage::CreateDefaultDevice(Poco::Data::Session &Session, std::string &SerialNumber,
 									  const Config::Capabilities &Caps, std::string &Firmware,
 									  const Poco::Net::IPAddress &IPAddress, bool simulated,
-									  uint64_t infraGroupId,const std::string &ipAddress) {
+									  uint64_t infraGroupId,const std::string &ipAddress,
+									  const std::string &reportedCountry) {
 
 		GWObjects::Device D;
 
@@ -623,8 +624,10 @@ namespace OpenWifi {
 			}
 		}
 
-		//	We need to insert the country code according to the IP in the radios section...
-		D.locale = InsertRadiosCountyRegulation(D.Configuration, IPAddress);
+		// Preserve existing radio configuration initialization.
+		InsertRadiosCountyRegulation(D.Configuration, IPAddress);
+		// Persist the locale reported by the AP.
+		D.locale = reportedCountry;
 		D.SerialNumber = Poco::toLower(SerialNumber);
 		D.Compatible = Caps.Compatible();
 		if(D.Compatible.empty())
