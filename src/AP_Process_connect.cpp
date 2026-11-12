@@ -158,7 +158,8 @@ namespace OpenWifi {
 				} else {
 					StorageService()->CreateDefaultDevice( DbSession_->Session(),
 						SerialNumber_, Caps, Firmware, PeerAddress_,
-						State_.VerifiedCertificate == GWObjects::SIMULATED, InfraGroupId_,State_.Address);
+						State_.VerifiedCertificate == GWObjects::SIMULATED, InfraGroupId_,State_.Address,
+						State_.locale);
 				}
 			} else if (!Daemon()->AutoProvisioning() && !DeviceExists) {
 				SendKafkaDeviceNotProvisioned(SerialNumber_, Firmware, Compatible_, CId_);
