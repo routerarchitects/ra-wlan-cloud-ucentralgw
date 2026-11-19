@@ -274,7 +274,7 @@ namespace OpenWifi {
 		return DbSessions_[NextDbSession_];
 	}
 
-	void AP_KAFKA_Server::HandleInfraLeave(Poco::JSON::Object::Ptr msg, const std::string &key) {
+    void AP_KAFKA_Server::HandleInfraLeave(Poco::JSON::Object::Ptr msg, [[maybe_unused]] const std::string &key) {
 		auto InfraSerial = msg->has("infra_group_infra") ? msg->get("infra_group_infra").toString() : "";
 		if (InfraSerial.empty()){
 			poco_warning(Logger(), fmt::format("Infra_leave serials empty"));

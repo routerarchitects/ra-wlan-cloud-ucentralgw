@@ -24,6 +24,7 @@
 #include "framework/MicroServiceFuncs.h"
 #include "framework/ow_constants.h"
 #include "framework/utils.h"
+#include "framework/MemoryDiagnostics.h"
 
 namespace OpenWifi {
 
@@ -64,6 +65,7 @@ namespace OpenWifi {
 	}
 
 	void AP_Connection::ProcessJSONRPCResult(Poco::JSON::Object::Ptr Doc) {
+		++MemoryDiagnostics::RpcResults;
 		poco_trace(Logger_, fmt::format("RECEIVED-RPC({}): {}.", CId_,
 										Doc->get(uCentralProtocol::ID).toString()));
 		CommandManager()->PostCommandResult(SerialNumber_, Doc);
@@ -152,14 +154,17 @@ namespace OpenWifi {
 
 		switch (EventType) {
 		case uCentralProtocol::Events::ET_CONNECT: {
+			++MemoryDiagnostics::ConnectEvents;
 			Process_connect(ParamsObj, Serial);
 		} break;
 
 		case uCentralProtocol::Events::ET_STATE: {
+			++MemoryDiagnostics::StateEvents;
 			Process_state(ParamsObj);
 		} break;
 
 		case uCentralProtocol::Events::ET_HEALTHCHECK: {
+			++MemoryDiagnostics::HealthcheckEvents;
 			Process_healthcheck(ParamsObj);
 		} break;
 
@@ -172,6 +177,7 @@ namespace OpenWifi {
 		} break;
 
 		case uCentralProtocol::Events::ET_PING: {
+			++MemoryDiagnostics::PingEvents;
 			Process_ping(ParamsObj);
 		} break;
 
@@ -188,6 +194,7 @@ namespace OpenWifi {
 		} break;
 
 		case uCentralProtocol::Events::ET_TELEMETRY: {
+			++MemoryDiagnostics::TelemetryEvents;
 			Process_telemetry(ParamsObj);
 		} break;
 

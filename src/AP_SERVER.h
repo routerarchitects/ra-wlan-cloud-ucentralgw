@@ -26,6 +26,7 @@
 #include "UI_GW_WebSocketNotifications.h"
 #include "framework/KafkaManager.h"
 #include "framework/KafkaTopics.h"
+#include "framework/MemoryDiagnostics.h"
 
 namespace OpenWifi {
 
@@ -152,6 +153,7 @@ namespace OpenWifi {
 		inline void AddCleanupSession(uint64_t session_id, uint64_t SerialNumber) {
 			std::lock_guard G(CleanupMutex_);
 			CleanupSessions_.emplace_back(session_id, SerialNumber);
+			++MemoryDiagnostics::CleanupEnqueued;
 		}
 
 		inline void IncrementConnectionCount() { ++NumberOfConnectedDevices_; }

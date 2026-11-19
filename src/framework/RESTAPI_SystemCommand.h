@@ -79,6 +79,12 @@ namespace OpenWifi {
 					Answer.set("peakRealMem", peakRealMem);
 					Answer.set("currVirtMem", currVirtMem);
 					Answer.set("peakVirtMem", peakVirtMem);
+					std::string diagnostics;
+					if (HasParameter("diagnostics", diagnostics) && diagnostics == "memory") {
+						// Sensitive diagnostics are served only by the internal diagnostics handler.
+						return UnAuthorized(RESTAPI::Errors::ACCESS_DENIED);
+					}
+
 					return ReturnObject(Answer);
 				}
 			}

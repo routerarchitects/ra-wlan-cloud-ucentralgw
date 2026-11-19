@@ -211,9 +211,11 @@ namespace OpenWifi {
 					}
 					Session = CleanupSessions_.front();
 					CleanupSessions_.pop_front();
+					++MemoryDiagnostics::CleanupDequeued;
 				}
 				poco_trace(this->Logger(),fmt::format("Cleaning up session: {} for device: {}", Session.first, Utils::IntToSerialNumber(Session.second)));
 				EndSession(Session.first, Session.second);
+				++MemoryDiagnostics::CleanupCompleted;
 			}
 		}
 	}

@@ -11,15 +11,20 @@
 #include "framework/OpenWifiTypes.h"
 #include "framework/SubSystemServer.h"
 #include "framework/utils.h"
+#include "framework/MemoryDiagnostics.h"
 
 #include "cppkafka/cppkafka.h"
 
 namespace OpenWifi {
 
 	class KafkaMessage : public Poco::Notification {
+		MemoryDiagnostics::NotificationLifetime Accounting_;
 	  public:
 		KafkaMessage(const char * Topic, const std::string &Key, const std::string &Payload)
-			: Topic_(Topic), Key_(Key), Payload_(Payload) {}
+			: Accounting_(MemoryDiagnostics::Kafka, Key.size() + Payload.size()),
+			  Topic_(Topic), Key_(Key), Payload_(Payload) {}
+
+		void ProcessingStarted() noexcept { Accounting_.Started(); }
 
 		inline const char * Topic() { return Topic_; }
 		inline const std::string &Key() { return Key_; }

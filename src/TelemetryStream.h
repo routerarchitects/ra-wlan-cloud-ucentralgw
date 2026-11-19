@@ -22,6 +22,7 @@
 #include "Poco/URI.h"
 
 #include "framework/SubSystemServer.h"
+#include "framework/MemoryDiagnostics.h"
 
 #include "AP_WS_Reactor_Pool.h"
 #include "TelemetryClient.h"
@@ -31,12 +32,15 @@ namespace OpenWifi {
 	class TelemetryNotification : public Poco::Notification {
 	  public:
 		enum class NotificationType { data, unregister };
+		MemoryDiagnostics::NotificationLifetime Accounting_;
 
 		explicit TelemetryNotification(std::uint64_t SerialNumber, const std::string &Payload)
-			: Type_(NotificationType::data), SerialNumber_(SerialNumber), Data_(Payload) {}
+			: Accounting_(MemoryDiagnostics::Telemetry, Payload.size()),
+			  Type_(NotificationType::data), SerialNumber_(SerialNumber), Data_(Payload) {}
 
 		explicit TelemetryNotification(const std::string &UUID)
-			: Type_(NotificationType::unregister), Data_(UUID) {}
+			: Accounting_(MemoryDiagnostics::Telemetry, UUID.size()),
+			  Type_(NotificationType::unregister), Data_(UUID) {}
 
 		NotificationType Type_;
 		std::uint64_t SerialNumber_ = 0;

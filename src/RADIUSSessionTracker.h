@@ -12,6 +12,7 @@
 #include <Poco/Timer.h>
 
 #include "RADIUS_helpers.h"
+#include "framework/MemoryDiagnostics.h"
 
 #include <RESTObjects/RESTAPI_GWobjects.h>
 
@@ -19,6 +20,7 @@ namespace OpenWifi {
 
 	class SessionNotification : public Poco::Notification {
 	  public:
+		MemoryDiagnostics::NotificationLifetime Accounting_;
 
 		enum class NotificationType {
 			accounting_session_message,
@@ -27,11 +29,13 @@ namespace OpenWifi {
 		};
 
 		explicit SessionNotification(NotificationType T, const std::string &Destination, const std::string &SerialNumber, const RADIUS::RadiusPacket &P, const std::string &secret)
-			: Type_(T), Destination_(Destination), SerialNumber_(SerialNumber), Packet_(P), Secret_(secret) {
+				: Accounting_(MemoryDiagnostics::Radius, sizeof(RADIUS::RadiusPacket) + Destination.size() + SerialNumber.size() + secret.size()),
+				  Type_(T), Destination_(Destination), SerialNumber_(SerialNumber), Packet_(P), Secret_(secret) {
 		}
 
 		explicit SessionNotification(const std::string &SerialNumber)
-			: Type_(NotificationType::ap_disconnect), SerialNumber_(SerialNumber) {
+				: Accounting_(MemoryDiagnostics::Radius, sizeof(RADIUS::RadiusPacket) + SerialNumber.size()),
+				  Type_(NotificationType::ap_disconnect), SerialNumber_(SerialNumber) {
 
 		}
 

@@ -71,20 +71,20 @@ namespace OpenWifi {
 			if (!TmpName.empty())
 				return false;
 
-				Sess.begin();
-				Poco::Data::Statement Insert(Sess);
+			Sess.begin();
+			Poco::Data::Statement Insert(Sess);
 
-				St = "INSERT INTO DefaultConfigs ( " + DB_DefConfig_SelectFields +
-							   " ) "
-							   "VALUES(" +
-							   DB_DefConfig_InsertValues + ")";
+			St = "INSERT INTO DefaultConfigs ( " + DB_DefConfig_SelectFields +
+						   " ) "
+						   "VALUES(" +
+						   DB_DefConfig_InsertValues + ")";
 
-				DefConfigRecordTuple R;
-				Convert(DefConfig, R);
-				Insert << ConvertParams(St), Poco::Data::Keywords::use(R);
-				Insert.execute();
-				Sess.commit();
-				return true;
+			DefConfigRecordTuple R;
+			Convert(DefConfig, R);
+			Insert << ConvertParams(St), Poco::Data::Keywords::use(R);
+			Insert.execute();
+			Sess.commit();
+			return true;
 		} catch (const Poco::Exception &E) {
 			poco_warning(Logger(), fmt::format("{}: Failed with: {}", std::string(__func__),
 											   E.displayText()));

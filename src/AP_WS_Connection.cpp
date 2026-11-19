@@ -30,6 +30,7 @@
 #include <AP_ServerProvider.h>
 #include <StorageService.h>
 #include <GWKafkaEvents.h>
+#include "framework/MemoryDiagnostics.h"
 
 namespace OpenWifi {
 
@@ -54,6 +55,7 @@ namespace OpenWifi {
 		uuid_ = MicroServiceRandom(std::numeric_limits<std::uint64_t>::max()-1);
 
 		GetAPServer()->IncrementConnectionCount();
+		++MemoryDiagnostics::ConnectionsConstructed;
 	}
 
 	void AP_WS_Connection::Start() {
@@ -73,16 +75,19 @@ namespace OpenWifi {
 	}
 
 	AP_WS_Connection::~AP_WS_Connection() {
+		++MemoryDiagnostics::DestructorsEntered;
 		std::lock_guard G(ConnectionMutex_);
 		GetAPServer()->DecrementConnectionCount();
 		EndConnection();
 		poco_debug(Logger_, fmt::format("TERMINATION({}): Session={}, Connection removed.", SerialNumber_,
 										State_.sessionId));
+		++MemoryDiagnostics::DestructorBodiesFinished;
 	}
 
 	void AP_WS_Connection::EndConnection() {
 		bool expectedValue=false;
 		if (Dead_.compare_exchange_strong(expectedValue,true,std::memory_order_release,std::memory_order_relaxed)) {
+			++MemoryDiagnostics::DisconnectsStarted;
 
 			if(!SerialNumber_.empty() && State_.LastContact!=0) {
 				StorageService()->SetDeviceLastRecordedContact(SerialNumber_, State_.LastContact);
@@ -532,7 +537,7 @@ namespace OpenWifi {
 		EndConnection();
 	}
 
-	bool AP_WS_Connection::Send(const std::string &Payload,std::chrono::milliseconds WaitTimeInMs ) {
+    bool AP_WS_Connection::Send(const std::string &Payload, [[maybe_unused]] std::chrono::milliseconds WaitTimeInMs) {
 		try {
 			size_t BytesSent = WS_->sendFrame(Payload.c_str(), (int)Payload.size());
 

@@ -95,6 +95,23 @@ namespace OpenWifi {
 			R"lit(" } , "payload" : )lit";
 
 		cppkafka::Producer Producer(Config);
+		auto SampleNativeQueue = [&]() {
+			MemoryDiagnostics::KafkaNativeOutq.store(Producer.get_out_queue_length(), std::memory_order_relaxed);
+			MemoryDiagnostics::KafkaNativeSampleNs.store(MemoryDiagnostics::NowNs(), std::memory_order_relaxed);
+		};
+		auto Flush = [&]() {
+			MemoryDiagnostics::OperationScope timing(MemoryDiagnostics::KafkaFlush);
+			SampleNativeQueue();
+			try {
+				Producer.flush();
+			} catch (...) {
+				++MemoryDiagnostics::KafkaFlushExceptions;
+				SampleNativeQueue();
+				throw;
+			}
+			SampleNativeQueue();
+		};
+		SampleNativeQueue();
 		Running_ = true;
 
 		Poco::AutoPtr<Poco::Notification> Note(Queue_.waitDequeueNotification());
@@ -102,15 +119,26 @@ namespace OpenWifi {
 			try {
 				auto Msg = dynamic_cast<KafkaMessage *>(Note.get());
 				if (Msg != nullptr) {
+					Msg->ProcessingStarted();
 					auto NewMessage = cppkafka::MessageBuilder(Msg->Topic());
 					NewMessage.key(Msg->Key());
 					NewMessage.partition(0);
 					NewMessage.payload(Msg->Payload());
-					Producer.produce(NewMessage);
+					{
+						MemoryDiagnostics::OperationScope timing(MemoryDiagnostics::KafkaProduce);
+						try {
+							Producer.produce(NewMessage);
+							++MemoryDiagnostics::KafkaAccepted;
+						} catch (...) {
+							++MemoryDiagnostics::KafkaProduceExceptions;
+							throw;
+						}
+					}
+					SampleNativeQueue();
 					if (Queue_.size() < 100) {
 						// use flush when internal queue is lightly loaded, i.e. flush after each
 						// message
-						Producer.flush();
+						Flush();
 					}
 					else {
 						// use poll when internal queue is loaded to allow messages to be sent in
@@ -120,7 +148,7 @@ namespace OpenWifi {
 				}
 				if (Queue_.size() == 0) {
 					// message queue is empty, flush all previously sent messages
-					Producer.flush();
+					Flush();
 				}
 			} catch (const cppkafka::HandleException &E) {
 				poco_warning(Logger_,
@@ -130,9 +158,10 @@ namespace OpenWifi {
 			} catch (...) {
 				poco_error(Logger_, "std::exception");
 			}
+			SampleNativeQueue();
 			Note = Queue_.waitDequeueNotification();
 		}
-		Producer.flush();
+		Flush();
 		poco_information(Logger_, "Stopped...");
 	}
 
@@ -192,6 +221,7 @@ namespace OpenWifi {
 		Dispatcher_->run(
 			// Callback executed whenever a new message is consumed
 			[&](cppkafka::Message msg) {
+				++MemoryDiagnostics::KafkaConsumed;
 				// Print the key (if any)
 				std::lock_guard G(ConsumerMutex_);
 				auto It = Notifiers_.find(msg.get_topic());
@@ -242,6 +272,7 @@ namespace OpenWifi {
 								const std::string &Payload) {
 		std::lock_guard G(Mutex_);
 		Queue_.enqueueNotification(new KafkaMessage(Topic, Key, Payload));
+		MemoryDiagnostics::RecordKafkaAdmission(Topic, Key.size() + Payload.size());
 	}
 
 	void KafkaConsumer::Start() {
