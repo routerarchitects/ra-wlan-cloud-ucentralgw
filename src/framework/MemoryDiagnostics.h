@@ -1,5 +1,4 @@
-// Aggregate, observation-only counters for the OWGW memory investigation.
-// No payload copies, background threads, logging, or delivery-policy changes.
+// OWGW memory diagnostic counters and bounded async logging admission.
 #pragma once
 
 #include <atomic>
@@ -107,6 +106,7 @@ inline constexpr std::uint64_t MaxPendingLogMessages = 10000;
 struct LogCounters {
     Counter ingressed{0}, completed{0}, ingressRejected{0}, sinkFailed{0};
     Counter queueFullDropped{0};
+    Counter pendingSlots{0};
     Counter ingressedBytes{0}, completedBytes{0}, ingressRejectedBytes{0};
 };
 inline LogCounters Logging;
