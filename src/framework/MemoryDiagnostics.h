@@ -101,8 +101,12 @@ inline QueueCounters Kafka, Telemetry, CommandResults, Radius, Venue;
 // Observed logging ingresses and completed downstream deliveries. In-flight
 // includes the actual async queue plus the currently executing sink; an async
 // channel replaced or closed while holding messages can leave a residual.
+// Bound accepted-but-not-yet-delivered log messages to prevent a slow sink
+// from consuming unbounded RAM. Excess logs are counted and dropped.
+inline constexpr std::uint64_t MaxPendingLogMessages = 10000;
 struct LogCounters {
     Counter ingressed{0}, completed{0}, ingressRejected{0}, sinkFailed{0};
+    Counter queueFullDropped{0};
     Counter ingressedBytes{0}, completedBytes{0}, ingressRejectedBytes{0};
 };
 inline LogCounters Logging;
