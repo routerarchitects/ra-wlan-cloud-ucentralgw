@@ -62,6 +62,8 @@ inline Poco::JSON::Object Snapshot() {
     logging.set("ingressedTotal", logIn);
     logging.set("completedTotal", logOut);
     logging.set("ingressRejectedTotal", Read(Logging.ingressRejected));
+    logging.set("queueFullDroppedTotal", Read(Logging.queueFullDropped));
+    logging.set("queueLimitMessages", MaxPendingLogMessages);
     logging.set("sinkFailedTotal", Read(Logging.sinkFailed));
     const auto terminal = logOut + Read(Logging.ingressRejected);
     const auto terminalBytes = logBytesOut + Read(Logging.ingressRejectedBytes);
