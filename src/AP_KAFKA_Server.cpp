@@ -64,6 +64,8 @@ namespace OpenWifi {
 
 		GarbageCollector_.wakeUp();
 		GarbageCollector_.join();
+		// Wait for session cleanup before destroying server resources.
+		if (CleanupThread_.joinable()) CleanupThread_.join();
 
 		if (WatcherId_ != 0) {
 			KafkaManager()->UnregisterTopicWatcher(KafkaTopics::CNC_RES, WatcherId_);
