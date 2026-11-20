@@ -34,6 +34,15 @@
 
 namespace OpenWifi {
 
+	namespace {
+		// Poco::Buffer holds bytes, not a zero-terminated C string.
+		fmt::string_view FramePayloadView(const Poco::Buffer<char> &frame) {
+			return frame.size() == 0 || frame.begin() == nullptr
+				? fmt::string_view{}
+				: fmt::string_view(frame.begin(), frame.size());
+		}
+	}
+
 	AP_WS_Connection::AP_WS_Connection(Poco::Net::HTTPServerRequest &request,
 									   Poco::Net::HTTPServerResponse &response,
 									   uint64_t session_id, Poco::Logger &L,
@@ -85,6 +94,8 @@ namespace OpenWifi {
 	}
 
 	void AP_WS_Connection::EndConnection() {
+		// Serialize socket teardown with frame processing and other callbacks.
+		std::lock_guard G(ConnectionMutex_);
 		bool expectedValue=false;
 		if (Dead_.compare_exchange_strong(expectedValue,true,std::memory_order_release,std::memory_order_relaxed)) {
 			++MemoryDiagnostics::DisconnectsStarted;
@@ -283,10 +294,9 @@ namespace OpenWifi {
 	void AP_WS_Connection::OnSocketReadable(
 		[[maybe_unused]] const Poco::AutoPtr<Poco::Net::ReadableNotification> &pNf) {
 
-		if (Dead_) //	we are dead, so we do not process anything.
+		std::lock_guard G(ConnectionMutex_);
+		if (Dead_) // A concurrent error/shutdown may already have closed the socket.
 			return;
-
-		std::lock_guard	G(ConnectionMutex_);
 
 		State_.LastContact = LastContact_ = Utils::Now();
 		if (GetAPServer()->Running() && (DeviceValidated_ || ValidatedDevice())) {
@@ -368,11 +378,10 @@ namespace OpenWifi {
 
 			Op = flags & Poco::Net::WebSocket::FRAME_OP_BITMASK;
 
-			if (IncomingSize < 0 && flags == 0) {
-				poco_trace(Logger_,
-					fmt::format("EMPTY({}): Non-blocking try-again empty frame (len={}, flags={})",
-							   CId_, IncomingSize, flags));
-            } else if (IncomingSize == 0 && flags == 0) {
+			if (IncomingSize < 0) {
+				// EAGAIN from a non-blocking socket: there is no frame to process.
+				return;
+			} else if (IncomingSize == 0 && flags == 0) {
 				poco_information(Logger_,
 								 fmt::format("DISCONNECT({}): device has disconnected. Session={}",
 											 CId_, State_.sessionId));
@@ -434,7 +443,7 @@ namespace OpenWifi {
 					poco_trace(Logger_,
 							   fmt::format("TEXT({}): Frame received (len={}, flags={}). Msg={}",
 										   CId_, IncomingSize, flags,
-										   CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin()));
+										   FramePayloadView(CurrentFrame)));
 				} break;
 
 				case Poco::Net::WebSocket::FRAME_OP_CLOSE: {
@@ -460,21 +469,21 @@ namespace OpenWifi {
 			poco_warning(Logger_,
 						 fmt::format("ConnectionResetException({}): Text:{} Payload:{} Session:{}",
 									 CId_, E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 FramePayloadView(CurrentFrame),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::JSON::JSONException &E) {
 			poco_warning(Logger_,
 						 fmt::format("JSONException({}): Text:{} Payload:{} Session:{}", CId_,
 									 E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 FramePayloadView(CurrentFrame),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::Net::WebSocketException &E) {
 			poco_warning(Logger_,
 						 fmt::format("WebSocketException({}): Text:{} Payload:{} Session:{}", CId_,
 									 E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 FramePayloadView(CurrentFrame),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::Net::SSLConnectionUnexpectedlyClosedException &E) {
@@ -483,42 +492,42 @@ namespace OpenWifi {
 				fmt::format(
 					"SSLConnectionUnexpectedlyClosedException({}): Text:{} Payload:{} Session:{}",
 					CId_, E.displayText(),
-					CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+					FramePayloadView(CurrentFrame),
 					State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::Net::SSLException &E) {
 			poco_warning(Logger_,
 						 fmt::format("SSLException({}): Text:{} Payload:{} Session:{}", CId_,
 									 E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 FramePayloadView(CurrentFrame),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::Net::NetException &E) {
 			poco_warning(Logger_,
 						 fmt::format("NetException({}): Text:{} Payload:{} Session:{}", CId_,
 									 E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 FramePayloadView(CurrentFrame),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::IOException &E) {
 			poco_warning(Logger_,
 						 fmt::format("IOException({}): Text:{} Payload:{} Session:{}", CId_,
 									 E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 FramePayloadView(CurrentFrame),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::Exception &E) {
 			poco_warning(Logger_,
 						 fmt::format("Exception({}): Text:{} Payload:{} Session:{}", CId_,
 									 E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 FramePayloadView(CurrentFrame),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const std::exception &E) {
 			poco_warning(Logger_,
 						 fmt::format("std::exception({}): Text:{} Payload:{} Session:{}", CId_,
 									 E.what(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 FramePayloadView(CurrentFrame),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (...) {
