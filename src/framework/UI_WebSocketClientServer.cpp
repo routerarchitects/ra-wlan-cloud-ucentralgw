@@ -205,15 +205,13 @@ namespace OpenWifi {
 				return;
 
 			Poco::Buffer<char> IncomingFrame(0);
-			int flags;
-			int n;
-			n = Client->second->WS_->receiveFrame(IncomingFrame, flags);
-			auto Op = flags & Poco::Net::WebSocket::FRAME_OP_BITMASK;
+			int flags = 0;
+			const int n = Client->second->WS_->receiveFrame(IncomingFrame, flags);
 
 			if (n == -1) {
-				poco_warning(Logger(),
-					fmt::format("UI-EMPTY({}): {} Empty Frame flags {}.",
-								Client->second->Id_, Client->second->UserName_, flags));
+				// A nonblocking receive can return -1 when no complete frame is
+				// available. Repeated warnings here previously flooded the async
+				// logger and exhausted memory; wait for the next readable event.
 				return;
 			}
 			if (n == 0) {
@@ -223,6 +221,7 @@ namespace OpenWifi {
 				return EndConnection(Client);
 			}
 
+			const auto Op = flags & Poco::Net::WebSocket::FRAME_OP_BITMASK;
 			switch (Op) {
 			case Poco::Net::WebSocket::FRAME_OP_PING: {
 				Client->second->WS_->sendFrame("", 0,
