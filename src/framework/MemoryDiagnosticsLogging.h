@@ -1,4 +1,4 @@
-// Observation-only accounting for Poco AsyncChannel. No queue caps or log drops.
+// Bounded asynchronous log admission and accounting for OWGW memory safety.
 #pragma once
 #include "framework/MemoryDiagnostics.h"
 #include "Poco/AsyncChannel.h"
@@ -23,12 +23,32 @@ public:
         if (ingress_) {
             Logging.ingressed.fetch_add(1, std::memory_order_relaxed);
             Logging.ingressedBytes.fetch_add(bytes, std::memory_order_relaxed);
+
+            // Reserve a slot before the Poco AsyncChannel allocates a queued
+            // notification. The CAS keeps admission bounded across threads.
+            auto pending = Logging.pendingSlots.load(std::memory_order_relaxed);
+            while (true) {
+                if (pending >= MaxPendingLogMessages) {
+                    Logging.queueFullDropped.fetch_add(1, std::memory_order_relaxed);
+                    Logging.ingressRejected.fetch_add(1, std::memory_order_relaxed);
+                    Logging.ingressRejectedBytes.fetch_add(bytes, std::memory_order_relaxed);
+                    return;
+                }
+                if (Logging.pendingSlots.compare_exchange_weak(
+                        pending, pending + 1, std::memory_order_acq_rel,
+                        std::memory_order_relaxed)) {
+                    break;
+                }
+            }
+
             try {
                 next_->log(message);
             } catch (...) {
-                // Submission failed; do not treat it as permanently queued.
+                // The async channel did not accept this message. Release the
+                // reserved slot and retain the original exception semantics.
                 Logging.ingressRejected.fetch_add(1, std::memory_order_relaxed);
                 Logging.ingressRejectedBytes.fetch_add(bytes, std::memory_order_relaxed);
+                Logging.pendingSlots.fetch_sub(1, std::memory_order_acq_rel);
                 throw;
             }
         } else {
@@ -38,10 +58,12 @@ public:
                 Logging.sinkFailed.fetch_add(1, std::memory_order_relaxed);
                 Logging.completed.fetch_add(1, std::memory_order_relaxed);
                 Logging.completedBytes.fetch_add(bytes, std::memory_order_relaxed);
+                Logging.pendingSlots.fetch_sub(1, std::memory_order_acq_rel);
                 throw;
             }
             Logging.completed.fetch_add(1, std::memory_order_relaxed);
             Logging.completedBytes.fetch_add(bytes, std::memory_order_relaxed);
+            Logging.pendingSlots.fetch_sub(1, std::memory_order_acq_rel);
         }
     }
 
