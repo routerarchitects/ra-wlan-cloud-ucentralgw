@@ -26,6 +26,7 @@
 #include "RESTAPI/RESTAPI_default_firmwares.h"
 
 #include "framework/RESTAPI_SystemCommand.h"
+#include "framework/RESTAPI_InternalMemoryDiagnostics.h"
 #include "framework/RESTAPI_SystemConfiguration.h"
 #include "framework/RESTAPI_WebSocketServer.h"
 
@@ -55,7 +56,7 @@ namespace OpenWifi {
 		return RESTAPI_Router_I<
 			RESTAPI_devices_handler, RESTAPI_device_handler, RESTAPI_device_commandHandler,
 			RESTAPI_default_configurations, RESTAPI_default_configuration, RESTAPI_command,
-			RESTAPI_commands, RESTAPI_ouis, RESTAPI_file, RESTAPI_blacklist,
+			RESTAPI_commands, RESTAPI_ouis, RESTAPI_file, RESTAPI_internal_memory_diagnostics, RESTAPI_blacklist,
 			RESTAPI_iptocountry_handler, RESTAPI_radiusProxyConfig_handler, RESTAPI_scripts_handler,
 			RESTAPI_script_handler, RESTAPI_blacklist_list, RESTAPI_radiussessions_handler,
 			RESTAPI_regulatory, RESTAPI_default_firmwares,

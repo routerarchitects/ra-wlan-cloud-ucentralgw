@@ -72,6 +72,8 @@ namespace OpenWifi {
 	}
 
 	void UI_WebSocketClientServer::EndConnection(ClientList::iterator Client) {
+		// Avoid inserting the same iterator twice when events race with removal.
+		if (!Client->second->SocketRegistered_) return;
 		if (Client->second->SocketRegistered_) {
 			Client->second->SocketRegistered_ = false;
 			Reactor_.removeEventHandler(
@@ -201,21 +203,27 @@ namespace OpenWifi {
 		try {
 
 			Client = Clients_.find(pNf->socket().impl()->sockfd());
-			if (Client == end(Clients_))
+			if (Client == end(Clients_) || !Client->second->SocketRegistered_)
 				return;
 
 			Poco::Buffer<char> IncomingFrame(0);
-			int flags;
-			int n;
-			n = Client->second->WS_->receiveFrame(IncomingFrame, flags);
-			auto Op = flags & Poco::Net::WebSocket::FRAME_OP_BITMASK;
+			int flags = 0;
+			const int n = Client->second->WS_->receiveFrame(IncomingFrame, flags);
 
 			if (n == -1) {
-				poco_warning(Logger(),
-					fmt::format("UI-EMPTY({}): {} Empty Frame flags {}.",
-								Client->second->Id_, Client->second->UserName_, flags));
+				// A transient nonblocking read is not a log-worthy error.
+				// On a stuck readable socket, eventually unregister it rather
+				// than spinning indefinitely on unreadable frames.
+				constexpr unsigned int MaxConsecutiveEmptyReads = 128;
+				if (++Client->second->ConsecutiveEmptyReads_ >= MaxConsecutiveEmptyReads) {
+					poco_warning(Logger(), fmt::format(
+						"UI WebSocket {} had {} consecutive empty reads; disconnecting.",
+						Client->second->Id_, MaxConsecutiveEmptyReads));
+					return EndConnection(Client);
+				}
 				return;
 			}
+			Client->second->ConsecutiveEmptyReads_ = 0;
 			if (n == 0) {
 				poco_debug(Logger(),
 					fmt::format("CLOSE({}): {} UI Client is closing WS connection.",
@@ -223,6 +231,7 @@ namespace OpenWifi {
 				return EndConnection(Client);
 			}
 
+			const auto Op = flags & Poco::Net::WebSocket::FRAME_OP_BITMASK;
 			switch (Op) {
 			case Poco::Net::WebSocket::FRAME_OP_PING: {
 				Client->second->WS_->sendFrame("", 0,

@@ -37,6 +37,7 @@ namespace OpenWifi {
 
 			try {
 				if (Resp != nullptr) {
+					Resp->Accounting_.Started();
 					Poco::JSON::Object::Ptr Payload = Resp->Payload_;
 					std::string SerialNumberStr = Utils::IntToSerialNumber(Resp->SerialNumber_);
 

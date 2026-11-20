@@ -74,6 +74,7 @@ namespace OpenWifi {
 		while (NextNotification && Running_) {
 			auto Notification = dynamic_cast<TelemetryNotification *>(NextNotification.get());
 			if (Notification != nullptr) {
+				Notification->Accounting_.Started();
 				std::lock_guard Lock(Mutex_);
 				switch (Notification->Type_) {
 				case TelemetryNotification::NotificationType::data: {

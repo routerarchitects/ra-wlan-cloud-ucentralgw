@@ -19,14 +19,17 @@
 #include "framework/MicroServiceFuncs.h"
 #include "framework/SubSystemServer.h"
 #include "framework/utils.h"
+#include "framework/MemoryDiagnostics.h"
 
 namespace OpenWifi {
 
 	class VenueBroadcastNotification : public Poco::Notification {
 	  public:
+		MemoryDiagnostics::NotificationLifetime Accounting_;
 		VenueBroadcastNotification(const std::string &SourceSerialNumber, Poco::JSON::Object::Ptr Data,
 								   uint64_t TimeStamp)
-			: SourceSerialNumber_(SourceSerialNumber), Data_(Data), TimeStamp_(TimeStamp) {}
+			: Accounting_(MemoryDiagnostics::Venue, SourceSerialNumber.size() + sizeof(Poco::JSON::Object::Ptr) + sizeof(TimeStamp)),
+			  SourceSerialNumber_(SourceSerialNumber), Data_(Data), TimeStamp_(TimeStamp) {}
 		std::string SourceSerialNumber_;
 		Poco::JSON::Object::Ptr Data_;
 		uint64_t TimeStamp_ = Utils::Now();
@@ -113,6 +116,7 @@ namespace OpenWifi {
 				auto Notification =
 					dynamic_cast<VenueBroadcastNotification *>(NextNotification.get());
 				if (Notification != nullptr) {
+					Notification->Accounting_.Started();
 					Types::StringVec SerialNumbers;
 					if (FindSerialNumberList(Notification->SourceSerialNumber_, SerialNumbers)) {
 						Poco::JSON::Object Payload;

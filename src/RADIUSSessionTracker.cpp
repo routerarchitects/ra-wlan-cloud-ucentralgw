@@ -79,6 +79,7 @@ namespace OpenWifi {
 
 			try {
 				if (Session != nullptr) {
+					Session->Accounting_.Started();
 					switch(Session->Type_) {
 						case SessionNotification::NotificationType::accounting_session_message: {
 							ProcessAccountingSession(*Session);

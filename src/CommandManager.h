@@ -24,6 +24,7 @@
 
 #include "fmt/format.h"
 #include "framework/SubSystemServer.h"
+#include "framework/MemoryDiagnostics.h"
 
 #include "RESTObjects/RESTAPI_GWobjects.h"
 
@@ -31,6 +32,7 @@ namespace OpenWifi {
 
 	class RPCResponseNotification : public Poco::Notification {
 	  public:
+		MemoryDiagnostics::NotificationLifetime Accounting_{MemoryDiagnostics::CommandResults, sizeof(std::uint64_t) + sizeof(Poco::JSON::Object::Ptr)};
 		RPCResponseNotification(std::uint64_t ser, Poco::JSON::Object::Ptr pl)
 			: SerialNumber_(ser), Payload_(std::move(pl)) {}
 		std::uint64_t SerialNumber_;
