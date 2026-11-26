@@ -8,6 +8,7 @@
 //
 
 
+#include <Poco/AbstractObserver.h>
 #include <Poco/JSON/Parser.h>
 #include <Poco/JSON/JSONException.h>
 #include <Poco/Net/Context.h>
@@ -33,6 +34,45 @@
 
 namespace OpenWifi {
 
+	namespace {
+		// A registered observer owns only a weak reference. A callback takes a
+		// strong reference for its duration; failed observer removal cannot
+		// result in a callback dereferencing a destroyed AP. No callback mutex
+		// is held across connection processing (avoids a lock-order inversion).
+		template <typename N> class WeakAPObserver final : public Poco::AbstractObserver {
+			using Handler = void (AP_WS_Connection::*)(const Poco::AutoPtr<N> &);
+		  public:
+			WeakAPObserver(std::weak_ptr<AP_WS_Connection> connection, Handler handler)
+				: connection_(std::move(connection)), handler_(handler) {}
+			void notify(Poco::Notification *notification) const override {
+				if (!enabled_) return;
+				if (auto connection = connection_.lock()) {
+					if (auto *n = dynamic_cast<N *>(notification); n && enabled_)
+						(connection.get()->*handler_)(Poco::AutoPtr<N>(n, true));
+				}
+			}
+			bool equals(const Poco::AbstractObserver &other) const override {
+				auto *o = dynamic_cast<const WeakAPObserver *>(&other);
+				return o && handler_ == o->handler_ &&
+					!connection_.owner_before(o->connection_) && !o->connection_.owner_before(connection_);
+			}
+			bool accepts(Poco::Notification *n, const char *name) const override {
+				return enabled_ && n && (!name || n->name() == name) && dynamic_cast<N *>(n);
+			}
+			bool accepts(const Poco::Notification::Ptr &n) const override {
+				return enabled_ && dynamic_cast<N *>(n.get());
+			}
+			Poco::AbstractObserver *clone() const override {
+				return new WeakAPObserver(connection_, handler_);
+			}
+			void disable() override { enabled_ = false; }
+		  private:
+			std::weak_ptr<AP_WS_Connection> connection_;
+			Handler handler_;
+			std::atomic_bool enabled_{true};
+		};
+	}
+
 	AP_WS_Connection::AP_WS_Connection(Poco::Net::HTTPServerRequest &request,
 									   Poco::Net::HTTPServerResponse &response,
 									   uint64_t session_id, Poco::Logger &L,
@@ -57,69 +97,101 @@ namespace OpenWifi {
 	}
 
 	void AP_WS_Connection::Start() {
+		std::lock_guard G(ConnectionMutex_);
+		if (Dead_ || !GetAPServer()->Running()) {
+			EndConnection();
+			return;
+		}
 		Registered_ = true;
 		LastContact_ = Utils::Now();
-
-		Reactor_->addEventHandler(*WS_,
-								  Poco::NObserver<AP_WS_Connection, Poco::Net::ReadableNotification>(
-									  *this, &AP_WS_Connection::OnSocketReadable));
-		Reactor_->addEventHandler(*WS_,
-								  Poco::NObserver<AP_WS_Connection, Poco::Net::ShutdownNotification>(
-									  *this, &AP_WS_Connection::OnSocketShutdown));
-		Reactor_->addEventHandler(*WS_,
-								  Poco::NObserver<AP_WS_Connection, Poco::Net::ErrorNotification>(
-									  *this, &AP_WS_Connection::OnSocketError));
-
+		try {
+			Reactor_->addEventHandler(*WS_, WeakAPObserver<Poco::Net::ReadableNotification>(
+				weak_from_this(), &AP_WS_Connection::OnSocketReadable));
+			Reactor_->addEventHandler(*WS_, WeakAPObserver<Poco::Net::ShutdownNotification>(
+				weak_from_this(), &AP_WS_Connection::OnSocketShutdown));
+			Reactor_->addEventHandler(*WS_, WeakAPObserver<Poco::Net::ErrorNotification>(
+				weak_from_this(), &AP_WS_Connection::OnSocketError));
+		} catch (...) {
+			// Registration can fail after installing some observers.
+			EndConnection();
+			throw;
+		}
 	}
 
 	AP_WS_Connection::~AP_WS_Connection() {
-		// The bundled Poco NObserver holds its mutex while calling this object's
-		// OnSocket* handlers. Unregistering an observer in its own callback
-		// self-deadlocks. Unregister on this cleanup/destruction path instead,
-		// before taking ConnectionMutex_, so callbacks can complete.
+		// Callbacks hold a strong reference. Remove observers independently
+		// while the descriptor is valid, even if an earlier operation fails.
 		if (Registered_.exchange(false)) {
-			Reactor_->removeEventHandler(
-				*WS_, Poco::NObserver<AP_WS_Connection, Poco::Net::ReadableNotification>(
-					*this, &AP_WS_Connection::OnSocketReadable));
-			Reactor_->removeEventHandler(
-				*WS_, Poco::NObserver<AP_WS_Connection, Poco::Net::ShutdownNotification>(
-					*this, &AP_WS_Connection::OnSocketShutdown));
-			Reactor_->removeEventHandler(
-				*WS_, Poco::NObserver<AP_WS_Connection, Poco::Net::ErrorNotification>(
-					*this, &AP_WS_Connection::OnSocketError));
+			TeardownStep("Remove readable observer failed", [&] {
+				Reactor_->removeEventHandler(*WS_, WeakAPObserver<Poco::Net::ReadableNotification>(
+					weak_from_this(), &AP_WS_Connection::OnSocketReadable));
+			});
+			TeardownStep("Remove shutdown observer failed", [&] {
+				Reactor_->removeEventHandler(*WS_, WeakAPObserver<Poco::Net::ShutdownNotification>(
+					weak_from_this(), &AP_WS_Connection::OnSocketShutdown));
+			});
+			TeardownStep("Remove error observer failed", [&] {
+				Reactor_->removeEventHandler(*WS_, WeakAPObserver<Poco::Net::ErrorNotification>(
+					weak_from_this(), &AP_WS_Connection::OnSocketError));
+			});
 		}
-		std::lock_guard G(ConnectionMutex_);
+		TeardownStep("End connection failed", [&] { EndConnection(); });
+		TeardownStep("Close socket failed", [&] {
+			std::lock_guard write(SocketWriteMutex_);
+			WS_->close();
+		});
 		GetAPServer()->DecrementConnectionCount();
-		EndConnection();
-		// Poco looks up observer registrations by the still-valid socket FD.
-		WS_->close();
-		poco_debug(Logger_, fmt::format("TERMINATION({}): Session={}, Connection removed.", SerialNumber_,
-										State_.sessionId));
+		TeardownStep("Termination log failed", [&] {
+			poco_debug(Logger_, fmt::format("TERMINATION({}): Session={}, Connection removed.",
+				SerialNumber_, State_.sessionId));
+		});
+	}
+
+	void AP_WS_Connection::ShutdownTransportLocked() noexcept {
+		WritesDisabled_ = true;
+		// WebSocket::shutdown sends a CLOSE frame; virtual TLS shutdown may
+		// require a retry. This is forced teardown: use native TCP shutdown,
+		// preserving the descriptor for reactor removal and final close.
+		TeardownStep("TCP shutdown failed", [&] {
+			using Poco::Net::SocketImpl;
+			WS_->impl()->SocketImpl::shutdown();
+		});
+	}
+
+	bool AP_WS_Connection::WriteFrame(const void *payload, int length, int flags) {
+		std::lock_guard write(SocketWriteMutex_);
+		if (Dead_ || WritesDisabled_ || !GetAPServer()->Running()) return false;
+		try {
+			if (WS_->sendFrame(payload, length, flags) == length) return true;
+		} catch (const Poco::Exception &e) {
+			TeardownStep("WebSocket send error log failed", [&] { Logger_.log(e); });
+		} catch (...) {
+			TeardownStep("WebSocket send error log failed", [&] { Logger_.error("WebSocket send failed"); });
+		}
+		// Poco retains an incomplete nonblocking frame and requires the same
+		// payload on retry. Do not allow a later command/PONG to reuse that
+		// pending frame. Fail this send and wake the reactor for teardown.
+		ShutdownTransportLocked();
+		return false;
 	}
 
 	void AP_WS_Connection::EndConnection() {
-		// Serialize socket teardown with frame processing and other callbacks.
 		std::lock_guard G(ConnectionMutex_);
-		bool expectedValue=false;
-		if (Dead_.compare_exchange_strong(expectedValue,true,std::memory_order_release,std::memory_order_relaxed)) {
+		bool expectedValue = false;
+		if (!Dead_.compare_exchange_strong(expectedValue, true,
+				std::memory_order_acq_rel)) return;
 
-			if(!SerialNumber_.empty() && State_.LastContact!=0) {
+		TeardownStep("Transport shutdown failed", [&] {
+			std::lock_guard write(SocketWriteMutex_);
+			ShutdownTransportLocked();
+		});
+		if (!SessionAdmitted_) return;
+		TeardownStep("Persist last contact failed", [&] {
+			if (!SerialNumber_.empty() && State_.LastContact != 0)
 				StorageService()->SetDeviceLastRecordedContact(SerialNumber_, State_.LastContact);
-			}
-
-			// Shut down TCP promptly but keep its descriptor valid: the
-			// cleanup worker will remove observers before the final close.
-			try {
-				WS_->shutdown();
-			} catch (const Poco::Exception&) {
-				// Peer may already have disconnected.
-			}
-
-			if(!SerialNumber_.empty()) {
-				DeviceDisconnectionCleanup(SerialNumber_, uuid_);
-			}
-			GetAPServer()->AddCleanupSession(State_.sessionId, SerialNumberInt_);
-		}
+		});
+		if (!SerialNumber_.empty()) DeviceDisconnectionCleanup(SerialNumber_, uuid_);
+		GetAPServer()->AddCleanupSession(State_.sessionId, SerialNumberInt_);
 	}
 
 	bool AP_WS_Connection::ValidatedDevice() {
@@ -311,10 +383,8 @@ namespace OpenWifi {
 		[[maybe_unused]] const Poco::AutoPtr<Poco::Net::ReadableNotification> &pNf) {
 
 		std::lock_guard G(ConnectionMutex_);
-		if (Dead_) // A concurrent error/shutdown may already have closed the socket.
-			return;
-
-		State_.LastContact = LastContact_ = Utils::Now();
+		if (Dead_) return;
+		if (WritesDisabled_) return EndConnection();
 		if (GetAPServer()->Running() && (DeviceValidated_ || ValidatedDevice())) {
 			try {
 				return ProcessIncomingFrame();
@@ -416,13 +486,13 @@ namespace OpenWifi {
 				GetAPServer()->AddRX(IncomingSize);
 			}
 			State_.MessageCount++;
-			State_.LastContact = Utils::Now();
+			State_.LastContact = LastContact_ = Utils::Now();
 
 			switch (Op) {
 				case Poco::Net::WebSocket::FRAME_OP_PING: {
-					WS_->sendFrame("", 0,
-								   (int)Poco::Net::WebSocket::FRAME_OP_PONG |
-								   (int)Poco::Net::WebSocket::FRAME_FLAG_FIN);
+					if (!WriteFrame(IncomingSize > 0 ? CurrentFrame.begin() : "", IncomingSize,
+							Poco::Net::WebSocket::FRAME_OP_PONG | Poco::Net::WebSocket::FRAME_FLAG_FIN))
+						return EndConnection();
 
 					if (KafkaManager()->Enabled()) {
 						Poco::JSON::Object PingObject;
@@ -578,7 +648,11 @@ namespace OpenWifi {
 
 	bool AP_WS_Connection::Send(const std::string &Payload,std::chrono::milliseconds WaitTimeInMs ) {
 		try {
-			size_t BytesSent = WS_->sendFrame(Payload.c_str(), (int)Payload.size());
+			if (Payload.size() > static_cast<std::size_t>(std::numeric_limits<int>::max() - 16))
+				return false;
+			if (!WriteFrame(Payload.data(), static_cast<int>(Payload.size()),
+					Poco::Net::WebSocket::FRAME_TEXT)) return false;
+			const auto BytesSent = Payload.size();
 
 			/*
 			 * 	There is a possibility to actually try and send data but the device is no longer
@@ -587,32 +661,33 @@ namespace OpenWifi {
 			 * data never made it or the device is disconnected somehow.
 			 */
 #if defined(__APPLE__)
-			tcp_connection_info info;
+			tcp_connection_info info{};
 			int timeout = 4000;
 			auto expireAt = std::chrono::system_clock::now() + std::chrono::milliseconds(timeout);
 			do {
 				std::this_thread::sleep_for(std::chrono::milliseconds(50));
 				socklen_t opt_len = sizeof(info);
-				getsockopt(WS_->impl()->sockfd(), SOL_SOCKET, TCP_CONNECTION_INFO, (void *)&info,
-						   &opt_len);
+				if (Dead_ || WritesDisabled_ || getsockopt(WS_->impl()->sockfd(), SOL_SOCKET,
+						TCP_CONNECTION_INFO, (void *)&info, &opt_len) != 0) return false;
 			} while (!info.tcpi_tfo_syn_data_acked && expireAt > std::chrono::system_clock::now());
 			if (!info.tcpi_tfo_syn_data_acked)
 				return false;
 #else
-			tcp_info info;
+			tcp_info info{};
 			int timeout = 4000;
 			auto expireAt = std::chrono::system_clock::now() + std::chrono::milliseconds(timeout);
 			do {
 				std::this_thread::sleep_for(std::chrono::milliseconds(20));
 				socklen_t opt_len = sizeof(info);
-				getsockopt(WS_->impl()->sockfd(), SOL_TCP, TCP_INFO, (void *)&info, &opt_len);
+				if (Dead_ || WritesDisabled_ || getsockopt(WS_->impl()->sockfd(), SOL_TCP,
+						TCP_INFO, (void *)&info, &opt_len) != 0) return false;
 			} while (info.tcpi_unacked > 0 && expireAt > std::chrono::system_clock::now());
 
 			if (info.tcpi_unacked > 0) {
 				return false;
 			}
 #endif
-			State_.TX += BytesSent;
+			SentBytes_.fetch_add(BytesSent, std::memory_order_relaxed);
 			GetAPServer()->AddTX(BytesSent);
 			return BytesSent == Payload.size();
 		} catch (const Poco::Exception &E) {

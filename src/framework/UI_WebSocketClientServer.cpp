@@ -74,21 +74,19 @@ namespace OpenWifi {
 	void UI_WebSocketClientServer::EndConnection(ClientList::iterator Client) {
 		// Avoid inserting the same iterator twice when events race with removal.
 		if (!Client->second->SocketRegistered_) return;
-		if (Client->second->SocketRegistered_) {
-			Client->second->SocketRegistered_ = false;
-			Reactor_.removeEventHandler(
-				*Client->second->WS_,
-				Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ReadableNotification>(
-					*this, &UI_WebSocketClientServer::OnSocketReadable));
-			Reactor_.removeEventHandler(
-				*Client->second->WS_,
-				Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ShutdownNotification>(
-					*this, &UI_WebSocketClientServer::OnSocketShutdown));
-			Reactor_.removeEventHandler(
-				*Client->second->WS_,
-				Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ErrorNotification>(
-					*this, &UI_WebSocketClientServer::OnSocketError));
-		}
+		Client->second->SocketRegistered_ = false;
+		Reactor_.removeEventHandler(
+			*Client->second->WS_,
+			Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ReadableNotification>(
+				*this, &UI_WebSocketClientServer::OnSocketReadable));
+		Reactor_.removeEventHandler(
+			*Client->second->WS_,
+			Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ShutdownNotification>(
+				*this, &UI_WebSocketClientServer::OnSocketShutdown));
+		Reactor_.removeEventHandler(
+			*Client->second->WS_,
+			Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ErrorNotification>(
+				*this, &UI_WebSocketClientServer::OnSocketError));
 		ToBeRemoved_.push_back(Client);
 	}
 
@@ -211,20 +209,23 @@ namespace OpenWifi {
 			const int n = Client->second->WS_->receiveFrame(IncomingFrame, flags);
 
 			if (n == -1) {
-				// A transient nonblocking read is not a log-worthy error.
-				// On a stuck readable socket, eventually unregister it rather
-				// than spinning indefinitely on unreadable frames.
-				constexpr unsigned int MaxConsecutiveEmptyReads = 128;
-				if (++Client->second->ConsecutiveEmptyReads_ >= MaxConsecutiveEmptyReads) {
+				// Partial nonblocking reads are normal. Use an elapsed interval
+				// rather than counting callbacks, and reset on a complete frame.
+				using Clock = std::chrono::steady_clock;
+				constexpr auto MaxIncompleteRead = std::chrono::seconds(60);
+				const auto now = Clock::now();
+				auto &since = Client->second->IncompleteReadSince_;
+				if (since == Clock::time_point{}) since = now;
+				else if (now - since >= MaxIncompleteRead) {
 					poco_warning(Logger(), fmt::format(
-						"UI WebSocket {} had {} consecutive empty reads; disconnecting.",
-						Client->second->Id_, MaxConsecutiveEmptyReads));
+						"UI WebSocket {} incomplete read timeout; disconnecting.",
+						Client->second->Id_));
 					return EndConnection(Client);
 				}
 				return;
 			}
-			Client->second->ConsecutiveEmptyReads_ = 0;
-			if (n == 0) {
+			Client->second->IncompleteReadSince_ = {};
+			if (n == 0 && flags == 0) {
 				poco_debug(Logger(),
 					fmt::format("CLOSE({}): {} UI Client is closing WS connection.",
 								Client->second->Id_, Client->second->UserName_));

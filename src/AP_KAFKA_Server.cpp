@@ -64,13 +64,11 @@ namespace OpenWifi {
 
 		GarbageCollector_.wakeUp();
 		GarbageCollector_.join();
-		// Wait for session cleanup before destroying server resources.
-		if (CleanupThread_.joinable()) CleanupThread_.join();
-
 		if (WatcherId_ != 0) {
 			KafkaManager()->UnregisterTopicWatcher(KafkaTopics::CNC_RES, WatcherId_);
 			WatcherId_ = 0;
 		}
+		StopCleanupWorker();
 
 		poco_information(Logger(), "Stopped...");
 	}
@@ -132,11 +130,18 @@ namespace OpenWifi {
 
 			auto sessionId = ++session_id_;
 			KafkaConn = std::make_shared<AP_KAFKA_Connection>(Logger(), Session, sessionId);
-			AddConnection(KafkaConn);
+			if (!AddConnection(KafkaConn)) {
+				KafkaConn.reset();
+				return false;
+			}
 			KafkaConn->Start();
 			KafkaConn->setEssentials(DeviceInfo.ipAddress, serial, DeviceInfo.infraGroupId);
 			KafkaConn->setRecreation(DeviceInfo);
-			StartSession(sessionId, KafkaConn->SerialNumberInt_);
+			if (!StartSession(sessionId, KafkaConn->SerialNumberInt_)) {
+				KafkaConn->EndConnection();
+				KafkaConn.reset();
+				return false;
+			}
 
 			poco_information(Logger(),
 							 fmt::format("Kafka msg: recreated connection for {} session={},infraGroupId:{}", serial, sessionId,DeviceInfo.infraGroupId));
@@ -235,7 +240,7 @@ namespace OpenWifi {
 		auto sessionId = ++session_id_;
 		auto Session = NextDbSession();
 		auto NewConnection = std::make_shared<AP_KAFKA_Connection>( Logger(), Session, sessionId);
-		AddConnection(NewConnection);
+		if (!AddConnection(NewConnection)) return;
 		NewConnection->Start();
 		NewConnection->setEssentials(IP, InfraSerial, InfraGroupId);
 		{

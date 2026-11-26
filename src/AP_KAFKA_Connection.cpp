@@ -35,11 +35,12 @@ namespace OpenWifi {
 	}
 
 	AP_KAFKA_Connection::~AP_KAFKA_Connection() {
-		std::lock_guard G(ConnectionMutex_);
+		TeardownStep("End Kafka connection failed", [&] { EndConnection(); });
 		GetAPServer()->DecrementConnectionCount();
-		EndConnection();
-		poco_debug(Logger_, fmt::format("TERMINATION({}): Session={}, Connection removed.",
-										SerialNumber_, State_.sessionId));
+		TeardownStep("Termination log failed", [&] {
+			poco_debug(Logger_, fmt::format("TERMINATION({}): Session={}, Connection removed.",
+				SerialNumber_, State_.sessionId));
+		});
 	}
 
 	void AP_KAFKA_Connection::Start() {
@@ -215,21 +216,24 @@ namespace OpenWifi {
 		kafkaPayload.set("timeout", std::chrono::duration_cast<std::chrono::seconds>(WaitTimeInMs).count());
 
 		KafkaManager()->PostMessage(KafkaTopics::CNC, std::to_string(InfraGroupId_), kafkaPayload,false);
-		State_.TX += Payload.size();
+		SentBytes_.fetch_add(Payload.size(), std::memory_order_relaxed);
 		GetAPServer()->AddTX(Payload.size());
 		return true;
 	}
 
 	void AP_KAFKA_Connection::EndConnection() {
+		std::lock_guard G(ConnectionMutex_);
 		bool expectedValue = false;
 		if (!Dead_.compare_exchange_strong(expectedValue, true, std::memory_order_release,
 										   std::memory_order_relaxed)) {
 			return;
 		}
 
-		if (!SerialNumber_.empty() && State_.LastContact != 0) {
-			StorageService()->SetDeviceLastRecordedContact(SerialNumber_, State_.LastContact);
-		}
+		if (!SessionAdmitted_) return;
+		TeardownStep("Persist Kafka device last contact failed", [&] {
+			if (!SerialNumber_.empty() && State_.LastContact != 0)
+				StorageService()->SetDeviceLastRecordedContact(SerialNumber_, State_.LastContact);
+		});
 
 		if (!SerialNumber_.empty()) {
 			DeviceDisconnectionCleanup(SerialNumber_, uuid_);

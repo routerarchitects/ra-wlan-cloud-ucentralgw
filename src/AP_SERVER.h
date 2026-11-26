@@ -90,7 +90,7 @@ namespace OpenWifi {
 			return GetHealthcheck(Utils::SerialNumberToInt(SerialNumber), CheckData);
 		}
 
-		void StartSession(uint64_t session_id, uint64_t SerialNumber);
+		bool StartSession(uint64_t session_id, uint64_t SerialNumber);
 		bool EndSession(uint64_t session_id, uint64_t SerialNumber);
 		bool Disconnect(uint64_t SerialNumber);
 		void CleanupSessions();
@@ -143,23 +143,35 @@ namespace OpenWifi {
 		bool SendRadiusCoAData(const std::string &SerialNumber, const unsigned char *buffer,
 							   std::size_t size);
 
-		inline void AddConnection(std::shared_ptr<AP_Connection> Connection) {
-			std::uint64_t sessionHash = SessionHash::Hash(Connection->State_.sessionId);
-			std::lock_guard SessionLock(SessionMutex_[sessionHash]);
-			if (Sessions_[sessionHash].find(Connection->State_.sessionId) ==
-				end(Sessions_[sessionHash])) {
-				Sessions_[sessionHash][Connection->State_.sessionId] = std::move(Connection);
-			}
+		[[nodiscard]] inline bool AddConnection(const std::shared_ptr<AP_Connection> &Connection) {
+			const auto id = Connection->State_.sessionId;
+			const auto hash = SessionHash::Hash(id);
+			std::lock_guard SessionLock(SessionMutex_[hash]);
+			if (!Running_) return false;
+			if (!Sessions_[hash].try_emplace(id, Connection).second) return false;
+			Connection->SessionAdmitted_.store(true, std::memory_order_release);
+			return true;
 		}
 
-		inline void AddCleanupSession(uint64_t session_id, uint64_t SerialNumber) {
-			{
-				std::lock_guard G(CleanupMutex_);
-				if (!CleanupScheduledSessions_.insert(session_id).second)
-					return; // Already queued or being processed.
-				CleanupSessions_.emplace_back(session_id, SerialNumber);
+		inline void AddCleanupSession(uint64_t session_id, uint64_t SerialNumber) noexcept {
+			try {
+				{
+					std::lock_guard G(CleanupMutex_);
+					if (CleanupStopping_) return;
+					if (!CleanupScheduledSessions_.insert(session_id).second)
+						return; // Already queued or being processed.
+					try {
+						CleanupSessions_.emplace_back(session_id, SerialNumber);
+					} catch (...) {
+						CleanupScheduledSessions_.erase(session_id);
+						throw;
+					}
+				}
+				CleanupReady_.notify_one();
+			} catch (...) {
+				// A still-owned dead/idle session is eligible for the next GC scan.
+				try { Logger().error("Unable to schedule session cleanup; janitor will retry owned sessions"); } catch (...) {}
 			}
-			CleanupReady_.notify_one();
 		}
 
 		inline void IncrementConnectionCount() { ++NumberOfConnectedDevices_; }
@@ -218,6 +230,7 @@ namespace OpenWifi {
 		
 		void ReadEnvironment();
 		void SetJanitor(const std::string &garbageName);
+		void StopCleanupWorker();
 		using SerialNumberMap = std::map<uint64_t, std::shared_ptr<AP_Connection>>;
 
 		std::array<std::mutex, SessionHashMax> SessionMutex_;
@@ -228,6 +241,7 @@ namespace OpenWifi {
 
 		std::mutex CleanupMutex_;
 		std::condition_variable CleanupReady_;
+		bool CleanupStopping_ = true; // guarded by CleanupMutex_, independent of Running_
 		std::deque<std::pair<uint64_t, uint64_t>> CleanupSessions_;
 		std::unordered_set<uint64_t> CleanupScheduledSessions_;
 

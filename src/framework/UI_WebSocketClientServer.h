@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <map>
 #include <string>
 
@@ -33,7 +34,7 @@ namespace OpenWifi {
 		std::string UserName_;
 		bool Authenticated_ = false;
 		bool SocketRegistered_ = false;
-		unsigned int ConsecutiveEmptyReads_ = 0;
+		std::chrono::steady_clock::time_point IncompleteReadSince_{};
 		std::vector<std::uint64_t> Filter_;
 		SecurityObjects::UserInfoAndPolicy UserInfo_;
 

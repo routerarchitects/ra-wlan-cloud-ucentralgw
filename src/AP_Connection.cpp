@@ -54,13 +54,17 @@ namespace OpenWifi {
 
 	void AP_Connection::DeviceDisconnectionCleanup(const std::string &SerialNumber,
 												   std::uint64_t uuid) {
-		if (KafkaManager()->Enabled()) {
-			NotifyKafkaDisconnect(SerialNumber, uuid);
-		}
-		RADIUSSessionTracker()->DeviceDisconnect(SerialNumber);
-		GWWebSocketNotifications::SingleDevice_t N;
-		N.content.serialNumber = SerialNumber;
-		GWWebSocketNotifications::DeviceDisconnected(N);
+		TeardownStep("Kafka disconnect notification failed", [&] {
+			if (KafkaManager()->Enabled()) NotifyKafkaDisconnect(SerialNumber, uuid);
+		});
+		TeardownStep("RADIUS session cleanup failed", [&] {
+			RADIUSSessionTracker()->DeviceDisconnect(SerialNumber);
+		});
+		TeardownStep("UI disconnect notification failed", [&] {
+			GWWebSocketNotifications::SingleDevice_t N;
+			N.content.serialNumber = SerialNumber;
+			GWWebSocketNotifications::DeviceDisconnected(N);
+		});
 	}
 
 	void AP_Connection::ProcessJSONRPCResult(Poco::JSON::Object::Ptr Doc) {

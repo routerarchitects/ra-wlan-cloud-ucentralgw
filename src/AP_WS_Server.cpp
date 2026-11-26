@@ -41,7 +41,10 @@ namespace OpenWifi {
 			try {
 				auto NewConnection = std::make_shared<AP_WS_Connection>(request, response, session_id_, Logger_,
 																		AP_WS_Server()->NextReactor());
-				AP_WS_Server()->AddConnection(NewConnection);
+				if (!AP_WS_Server()->AddConnection(NewConnection)) {
+					poco_warning(Logger_, "WebSocket session admission rejected");
+					return;
+				}
 				NewConnection->Start();
 			} catch (...) {
 				poco_warning(Logger_, "Exception during WS creation");
@@ -62,8 +65,8 @@ namespace OpenWifi {
 			if (request.find("Upgrade") != request.end() &&
 				Poco::icompare(request["Upgrade"], "websocket") == 0) {
 				Utils::SetThreadName("ws:conn-init");
-				session_id_++;
-				return new AP_WS_RequestHandler(Logger_, session_id_);
+				const auto id = session_id_.fetch_add(1, std::memory_order_relaxed) + 1;
+				return new AP_WS_RequestHandler(Logger_, id);
 			} else {
 				return nullptr;
 			}
@@ -179,6 +182,7 @@ namespace OpenWifi {
 
 		}
 
+		SetJanitor("ws:garbage");
 		for (auto &server : WebServers_) {
 			server->start();
 		}
@@ -186,8 +190,6 @@ namespace OpenWifi {
 		ReactorThread_.start(Reactor_);
 
 		Utils::SetThreadName(ReactorThread_, "dev:react:head");
-
-		SetJanitor("ws:garbage");
 
 		return 0;
 	}
@@ -198,16 +200,16 @@ namespace OpenWifi {
 
 		GarbageCollector_.wakeUp();
 		GarbageCollector_.join();
-		// Wait for session cleanup before destroying server resources.
-		if (CleanupThread_.joinable()) CleanupThread_.join();
-
 		for (auto &server : WebServers_) {
 			server->stopAll();
 		}
+		// Let current upgrade handlers finish before stopping their reactors.
+		DeviceConnectionPool_.joinAll();
 
 		Reactor_pool_->Stop();
 		Reactor_.stop();
 		ReactorThread_.join();
+		StopCleanupWorker();
 		poco_information(Logger(), "Stopped...");
 	}
 

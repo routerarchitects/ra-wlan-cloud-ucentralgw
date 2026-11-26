@@ -1146,6 +1146,94 @@ components:
         peakVirtMem:
           type: integer
           format: int64
+        logging:
+          type: object
+          description: Process-lifetime bounded asynchronous logging metrics; sampled counters are not an atomic snapshot. Completed includes sink failures; rejected includes policy, enqueue and closed-channel rejections. Pending bytes account for original message source and text only.
+          properties:
+            boundedAsyncEnabled:
+              type: boolean
+            ingressedTotal:
+              type: integer
+              format: int64
+              minimum: 0
+            completedTotal:
+              type: integer
+              format: int64
+              minimum: 0
+            ingressRejectedTotal:
+              type: integer
+              format: int64
+              minimum: 0
+            sinkFailedTotal:
+              type: integer
+              format: int64
+              minimum: 0
+            countLimitDroppedTotal:
+              type: integer
+              format: int64
+              minimum: 0
+            byteLimitDroppedTotal:
+              type: integer
+              format: int64
+              minimum: 0
+            oversizedDroppedTotal:
+              type: integer
+              format: int64
+              minimum: 0
+            rateLimitedTotal:
+              type: integer
+              format: int64
+              minimum: 0
+            enqueueFailedTotal:
+              type: integer
+              format: int64
+              minimum: 0
+            closedRejectedTotal:
+              type: integer
+              format: int64
+              minimum: 0
+            pendingAdmissionSlots:
+              type: integer
+              format: int64
+              minimum: 0
+            pendingAccountedBytes:
+              type: integer
+              format: int64
+              minimum: 0
+            peakPendingAccountedBytesApprox:
+              type: integer
+              format: int64
+              minimum: 0
+            criticalFallbackAttemptedTotal:
+              type: integer
+              format: int64
+              minimum: 0
+            criticalFallbackSuppressedTotal:
+              type: integer
+              format: int64
+              minimum: 0
+            queueLimitMessages:
+              type: integer
+              format: int64
+              minimum: 0
+            queueLimitAccountedBytes:
+              type: integer
+              format: int64
+              minimum: 0
+            maxMessageAccountedBytes:
+              type: integer
+              format: int64
+              minimum: 0
+            verboseRateLimitPerSecond:
+              type: integer
+              format: int64
+              minimum: 0
+            droppedBySeverity:
+              type: object
+              additionalProperties:
+                type: integer
+                format: int64
+                minimum: 0
 
     SystemCommandResults:
       type: object

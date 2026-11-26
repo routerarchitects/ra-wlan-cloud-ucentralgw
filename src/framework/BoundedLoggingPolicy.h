@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <charconv>
 #include <cstdio>
@@ -118,5 +119,25 @@ struct AdmissionState {
     Counter pendingSlots{0}, pendingBytes{0}, verboseWindow{0};
 };
 inline AdmissionState Logging;
+
+// Lightweight production telemetry. No per-device keys or retained log payloads.
+inline constexpr std::array<const char *, 9> SeverityNames{
+    "fatal", "critical", "error", "warning", "notice", "information", "debug", "trace", "other"};
+struct LoggingMetrics {
+    std::atomic_bool enabled{false};
+    Counter ingressed{0}, completed{0}, rejected{0}, sinkFailed{0};
+    Counter countLimited{0}, byteLimited{0}, oversized{0}, rateLimited{0};
+    Counter enqueueFailed{0}, closedRejected{0}, peakPendingBytes{0};
+    Counter criticalFallbackAttempted{0}, criticalFallbackSuppressed{0}, fallbackWindow{0};
+    std::array<Counter, SeverityNames.size()> droppedBySeverity{};
+};
+inline LoggingMetrics Metrics;
+
+inline void UpdatePendingBytesPeak() noexcept {
+    const auto pending = Logging.pendingBytes.load(std::memory_order_relaxed);
+    auto peak = Metrics.peakPendingBytes.load(std::memory_order_relaxed);
+    while (pending > peak && !Metrics.peakPendingBytes.compare_exchange_weak(
+            peak, pending, std::memory_order_relaxed, std::memory_order_relaxed)) {}
+}
 
 } // namespace OpenWifi::BoundedLogging

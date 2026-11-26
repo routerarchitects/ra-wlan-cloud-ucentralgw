@@ -19,7 +19,7 @@ namespace OpenWifi {
 
 	AP_Server::~AP_Server() {
 		Running_ = false;
-		if (CleanupThread_.joinable()) CleanupThread_.join();
+		StopCleanupWorker();
 	}
 
 	bool AP_Server::GetHealthDevices(std::uint64_t lowLimit, std::uint64_t highLimit,
@@ -82,29 +82,33 @@ namespace OpenWifi {
 		return true;
 	}
 
-	void AP_Server::StartSession(uint64_t session_id, uint64_t SerialNumber) {
-		auto sessionHash = SessionHash::Hash(session_id);
-		std::shared_ptr<AP_Connection> Connection;
-		{
-			std::lock_guard SessionLock(SessionMutex_[sessionHash]);
-			auto SessionHint = Sessions_[sessionHash].find(session_id);
-			if (SessionHint == end(Sessions_[sessionHash])) {
-				return;
-			}
-			Connection = SessionHint->second;
-			Sessions_[sessionHash].erase(SessionHint);
-		}
-
-		// Do not destroy the old connection while holding the device-map lock:
-		// its destructor may publish disconnect events or revisit server state.
+	bool AP_Server::StartSession(uint64_t session_id, uint64_t SerialNumber) {
+		const auto sessionHash = SessionHash::Hash(session_id);
+		const auto deviceHash = MACHash::Hash(SerialNumber);
 		std::shared_ptr<AP_Connection> replacedConnection;
-		auto deviceHash = MACHash::Hash(SerialNumber);
 		{
-			std::lock_guard DeviceLock(SerialNumbersMutex_[deviceHash]);
-			auto &slot = SerialNumbers_[deviceHash][SerialNumber];
+			// Promotion and removal must not leave a gap in map ownership.
+			std::scoped_lock maps(SessionMutex_[sessionHash], SerialNumbersMutex_[deviceHash]);
+			if (!Running_) return false;
+			auto &sessions = Sessions_[sessionHash];
+			auto &devices = SerialNumbers_[deviceHash];
+			auto it = sessions.find(session_id);
+			if (it == sessions.end()) {
+				// Preserve repeated connect processing for the same active session.
+				auto existing = devices.find(SerialNumber);
+				return existing != devices.end() && existing->second &&
+					existing->second->State_.sessionId == session_id && !existing->second->Dead_;
+			}
+			if (it->second->Dead_) return false;
+			std::lock_guard cleanup(CleanupMutex_);
+			if (CleanupScheduledSessions_.count(session_id)) return false;
+			auto &slot = devices[SerialNumber];
 			replacedConnection = std::move(slot);
-			slot = std::move(Connection);
+			slot = std::move(it->second);
+			sessions.erase(it);
 		}
+		// Release replaced ownership outside all map and cleanup locks.
+		return true;
 	}
 
 	bool AP_Server::EndSession(uint64_t session_id, uint64_t SerialNumber) {
@@ -116,16 +120,13 @@ namespace OpenWifi {
 		bool sessionErased = false, deviceErased = false;
 		const char *deviceOutcome = "not_found";
 		{
-			std::lock_guard SessionLock(SessionMutex_[sessionHash]);
+			std::scoped_lock maps(SessionMutex_[sessionHash], SerialNumbersMutex_[hashIndex]);
 			auto sessionIt = Sessions_[sessionHash].find(session_id);
 			if (sessionIt != Sessions_[sessionHash].end()) {
 				removedSession = std::move(sessionIt->second);
 				Sessions_[sessionHash].erase(sessionIt);
 				sessionErased = true;
 			}
-		}
-		{
-			std::lock_guard DeviceLock(SerialNumbersMutex_[hashIndex]);
 			auto DeviceHint = SerialNumbers_[hashIndex].find(SerialNumber);
 			if (DeviceHint != SerialNumbers_[hashIndex].end()) {
 				if (!DeviceHint->second) {
@@ -140,6 +141,9 @@ namespace OpenWifi {
 				}
 			}
 		}
+		// Do not rely on destruction: another caller may still own the session.
+		if (removedSession) removedSession->EndConnection();
+		if (removedDevice && removedDevice != removedSession) removedDevice->EndConnection();
 		poco_trace(Logger(), fmt::format(
 			"SESSION-CLEANUP session={} serial={} session_hash={} device_hash={} session_erased={} "
 			"device_erased={} device_outcome={} map_cleanup_us={}",
@@ -211,35 +215,61 @@ namespace OpenWifi {
 	}
 
 	void AP_Server::CleanupSessions() {
-		while (Running_) {
+		for (;;) {
 			std::pair<uint64_t, uint64_t> Session;
 			{
 				std::unique_lock G(CleanupMutex_);
-				// Wake on new work instead of leaving dead sockets registered for
-				// up to ten seconds. The timeout preserves bounded stop latency
-				// for existing Stop() paths that only clear Running_.
-				CleanupReady_.wait_for(G, std::chrono::seconds(10), [this]() {
-					return !Running_ || !CleanupSessions_.empty();
+				CleanupReady_.wait(G, [this]() {
+					return CleanupStopping_ || !CleanupSessions_.empty();
 				});
-				if (!Running_)
-					break;
-				if (CleanupSessions_.empty())
+				if (CleanupSessions_.empty()) {
+					if (CleanupStopping_) break;
 					continue;
+				}
 				Session = CleanupSessions_.front();
 				CleanupSessions_.pop_front();
 			}
 			try {
 				EndSession(Session.first, Session.second);
-			} catch (const std::exception &e) {
-				poco_error(Logger(), fmt::format("Session cleanup {} failed: {}", Session.first, e.what()));
 			} catch (...) {
-				poco_error(Logger(), fmt::format("Session cleanup {} failed with unknown error", Session.first));
+				try { poco_error(Logger(), fmt::format("Session cleanup {} failed", Session.first)); } catch (...) {}
 			}
 			{
 				std::lock_guard G(CleanupMutex_);
 				CleanupScheduledSessions_.erase(Session.first);
 			}
 		}
+	}
+
+	void AP_Server::StopCleanupWorker() {
+		// Stop transport producers before closing admission. The worker drains
+		// pending work even though Running_ has already become false.
+		{
+			std::lock_guard G(CleanupMutex_);
+			CleanupStopping_ = true;
+		}
+		CleanupReady_.notify_all();
+		if (CleanupThread_.joinable()) CleanupThread_.join();
+
+		// Handle remaining map-owned sessions without allocating a new queue
+		// or destroying connections while a map lock is held.
+		auto releaseMap = [](auto &map, auto &mutex) {
+			for (;;) {
+				std::shared_ptr<AP_Connection> connection;
+				{
+					std::lock_guard G(mutex);
+					if (map.empty()) break;
+					auto it = map.begin();
+					connection = std::move(it->second);
+					map.erase(it);
+				}
+				if (connection) connection->EndConnection();
+			}
+		};
+		for (std::size_t i = 0; i < Sessions_.size(); ++i)
+			releaseMap(Sessions_[i], SessionMutex_[i]);
+		for (std::size_t i = 0; i < SerialNumbers_.size(); ++i)
+			releaseMap(SerialNumbers_[i], SerialNumbersMutex_[i]);
 	}
 
 	bool AP_Server::SendFrame(uint64_t SerialNumber, const std::string &Payload,std::chrono::milliseconds WaitTimeInMs) const {
@@ -463,6 +493,10 @@ namespace OpenWifi {
 		
 		SimulatorId_ = Poco::toLower(MicroServiceConfigGetString("simulatorid", ""));
 		SimulatorEnabled_ = !SimulatorId_.empty();
+		{
+			std::lock_guard G(CleanupMutex_);
+			CleanupStopping_ = false;
+		}
 		Running_ = true;
 
 		GarbageCollector_.setName(garbageName);

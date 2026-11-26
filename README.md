@@ -99,6 +99,40 @@ export OWGW_CONFIG=`pwd`
 ```
 You can run the shell script `set_env.sh` from the microservice root.
 
+#### Bounded asynchronous logging
+
+These process environment variables apply to asynchronous console, color-console
+and file logging. Set them in the OWGW service environment before startup;
+restart OWGW to change them. Synchronous or null logging does not use these
+admission limits.
+
+| Variable | Default | Accepted range | Meaning |
+| --- | ---: | ---: | --- |
+| `LOGGING_QUEUE_LIMIT` | 10000 | 1–1000000 | Maximum admitted messages (queued or in flight) |
+| `LOGGING_QUEUE_BYTES_LIMIT` | 67108864 | 1–536870912 | Maximum accounted pending bytes |
+| `LOGGING_MESSAGE_BYTES_LIMIT` | 16384 | 1–1048576 | Maximum accounted bytes per message; also capped by the queue byte limit |
+| `LOGGING_VERBOSE_RATE_LIMIT` | 20000 | 1–1000000 | Maximum DEBUG/TRACE admissions per one-second rate window |
+
+Values must be positive decimal integers. Invalid values fall back to the
+defaults with a stderr warning. Count and byte budgets reserve approximately
+20% for non-verbose messages and 10% for warning-or-higher priority. No severity
+is guaranteed admission when the hard limits are exhausted. Oversized messages
+are rejected; rejected messages are not retried. Accounted bytes include the
+original source and message text, not formatting or allocation overhead.
+
+The authenticated `GET /api/v1/system?command=resources` response includes a
+`logging` object with process-lifetime counters for incoming, completed,
+rejected and failed messages; rejection reasons and severities; pending slots
+and bytes; approximate peak pending bytes; and configured limits. Completed
+includes sink failures; rejected includes enqueue failures and closed-channel
+admissions. These counters are independent samples, not a transactional
+snapshot. They reset on process restart. Error, critical and fatal messages
+that cannot be delivered attempt a truncated stderr fallback, at most once
+per second across the process; additional fallback attempts are counted.
+Fallback is best effort and can be affected by stderr backpressure.
+Sink exceptions are contained so a failed log does not stop the asynchronous
+worker or interrupt AP processing.
+
 ### OWGW Service Configuration
 The configuration is kept in a file called `owgw.properties`. To understand the content of this file, 
 please look [here](https://github.com/routerarchitects/ra-wlan-cloud-ucentralgw/blob/main/CONFIGURATION.md)
