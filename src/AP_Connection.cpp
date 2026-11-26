@@ -99,8 +99,8 @@ namespace OpenWifi {
 				if (Utils::ExtractBase64CompressedData(CompressedData, UncompressedData,
 													   compress_sz)) {
 					poco_trace(Logger_,
-							   fmt::format("EVENT({}): Found compressed payload expanded to '{}'.",
-										   CId_, UncompressedData));
+							   fmt::format("EVENT({}): session={} method={:.128} compressed_bytes={} expanded_bytes={}",
+										 CId_, State_.sessionId, Method, CompressedData.size(), UncompressedData.size()));
 					Poco::JSON::Parser Parser;
 					ParamsObj = Parser.parse(UncompressedData).extract<Poco::JSON::Object::Ptr>();
 				} else {
@@ -221,7 +221,7 @@ namespace OpenWifi {
 
 	bool AP_Connection::StartTelemetry(uint64_t RPCID,
 									   const std::vector<std::string> &TelemetryTypes) {
-		poco_information(Logger_, fmt::format("TELEMETRY({}): Starting.", CId_));
+		poco_debug(Logger_, fmt::format("TELEMETRY({}): Starting.", CId_));
 		Poco::JSON::Object StartMessage;
 		StartMessage.set("jsonrpc", "2.0");
 		StartMessage.set("method", "telemetry");
@@ -247,7 +247,7 @@ namespace OpenWifi {
 	}
 
 	bool AP_Connection::StopTelemetry(uint64_t RPCID) {
-		poco_information(Logger_, fmt::format("TELEMETRY({}): Stopping.", CId_));
+		poco_debug(Logger_, fmt::format("TELEMETRY({}): Stopping.", CId_));
 		Poco::JSON::Object StopMessage;
 		StopMessage.set("jsonrpc", "2.0");
 		StopMessage.set("method", "telemetry");

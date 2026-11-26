@@ -228,7 +228,7 @@ namespace OpenWifi {
 			return;
 		}
 		if (Connected(Utils::SerialNumberToInt(serial))) {
-			poco_information(Logger(),
+			poco_debug(Logger(),
 							 fmt::format("Infra_join: device already connected: {}", serial));
 			return;
 		}
@@ -290,7 +290,7 @@ namespace OpenWifi {
 
 		auto serialInt = Utils::SerialNumberToInt(InfraSerial);
 		if (!Connected(serialInt)) {
-			poco_information(Logger(),
+			poco_debug(Logger(),
 							 fmt::format("Infra_leave: Device Not Connected: {}", InfraSerial));
 			return;
 		}
@@ -302,7 +302,7 @@ namespace OpenWifi {
 		}
 
 		Conn->EndConnection();
-		poco_information(Logger(), fmt::format("Infra_leave: disconnected {}", InfraSerial));
+		poco_debug(Logger(), fmt::format("Infra_leave: disconnected {}", InfraSerial));
 	}
 
 	void AP_KAFKA_Server::HandleDeviceMessage(Poco::JSON::Object::Ptr msg, const std::string &key,
@@ -376,7 +376,7 @@ namespace OpenWifi {
 
 		auto serialInt = Utils::SerialNumberToInt(InfraSerial);
 		if (!Connected(serialInt)) {
-			poco_information(Logger(), fmt::format("GroupID Change: Device Not Connected: {}", InfraSerial));
+			poco_debug(Logger(), fmt::format("GroupID Change: Device Not Connected: {}", InfraSerial));
 			return;
 		}
 

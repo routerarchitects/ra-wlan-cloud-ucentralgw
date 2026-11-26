@@ -271,7 +271,7 @@ namespace OpenWifi {
 				++request;
 			}
 		}
-		poco_information(MyLogger,
+		poco_debug(MyLogger,
 						 fmt::format("Outstanding-requests {}", OutStandingRequests_.size()));
 	}
 
@@ -356,7 +356,7 @@ namespace OpenWifi {
 
 							Poco::JSON::Parser P;
 							bool Sent;
-							poco_information(
+							poco_debug(
 								MyLogger,
 								fmt::format("{}: Serial={} Command={} Preparing execution.",
 											Cmd.UUID, Cmd.SerialNumber, Cmd.Command));

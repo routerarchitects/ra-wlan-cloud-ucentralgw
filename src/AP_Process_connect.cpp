@@ -274,11 +274,11 @@ namespace OpenWifi {
 											  (int)GetAPServer()->MismatchDepth())) ||
 					GetAPServer()->IsSimSerialNumber(CN_)) {
 					State_.VerifiedCertificate = GWObjects::VERIFIED;
-					poco_information(Logger_,
+					poco_debug(Logger_,
 									 fmt::format("CONNECT({}): Fully validated and authenticated "
-												 "device. Session={} ConnectionCompletion Time={}",
-												 CId_, State_.sessionId,
-												 State_.connectionCompletionTime));
+												 "device. Session={} ConnectionCompletion Time={} firmware={} config_uuid={} compatible={}",
+												 CId_, State_.sessionId, State_.connectionCompletionTime,
+												 State_.Firmware, State_.UUID, Compatible_));
 				} else {
 					State_.VerifiedCertificate = GWObjects::MISMATCH_SERIAL;
 					if (GetAPServer()->AllowSerialNumberMismatch()) {
@@ -297,7 +297,7 @@ namespace OpenWifi {
 					}
 				}
 			} else {
-				poco_information(Logger_,
+				poco_debug(Logger_,
 								 fmt::format("CONNECT({}): Simulator device. "
 											 "Session={} ConnectionCompletion Time={}",
 											 CId_, State_.sessionId,

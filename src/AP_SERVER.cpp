@@ -485,14 +485,13 @@ namespace OpenWifi {
 				break;
 			}
 
-			LocalLogger.information(fmt::format("Garbage collecting starting run."	));
 
 			uint64_t total_connected_time = 0, now = Utils::Now();
+			std::uint64_t idleDeviceEntries = 0, idleSessionEntries = 0, deadEntries = 0, nullEntries = 0;
+			const auto scanStarted = std::chrono::steady_clock::now();
 
 			if(now-last_zombie_run > 60) {
 				try {
-					poco_information(LocalLogger,
-									 fmt::format("Garbage collecting zombies... (step 1)"));
 					NumberOfConnectingDevices_ = 0;
 					AverageDeviceConnectionTime_ = 0;
 					int waits = 0;
@@ -505,20 +504,21 @@ namespace OpenWifi {
 								auto hint = SerialNumbers_[hashIndex].begin();
 								while (hint != end(SerialNumbers_[hashIndex])) {
 									if (hint->second == nullptr) {
-										poco_information(
-											LocalLogger,
-											fmt::format("Dead device found in hash index {}", hashIndex));
+										++nullEntries;
+										poco_debug(LocalLogger, fmt::format("Dead device found in hash index {}", hashIndex));
 										hint = SerialNumbers_[hashIndex].erase(hint);
 									} else {
 										auto Device = hint->second;
 										auto RightNow = Utils::Now();
 										if (Device->Dead_) {
+											++deadEntries;
 											AddCleanupSession(Device->State_.sessionId, Device->SerialNumberInt_);
 											++hint;
 											// hint = SerialNumbers_[hashIndex].erase(hint);
 										} else if (RightNow > Device->LastContact_ &&
 												   (RightNow - Device->LastContact_) > SessionTimeOut_) {
-											poco_information(
+											++idleDeviceEntries;
+											poco_debug(
 												LocalLogger,
 												fmt::format(
 													"{}: Session seems idle. Controller disconnecting device.",
@@ -546,7 +546,6 @@ namespace OpenWifi {
 						}
 					}
 
-					poco_information(LocalLogger, fmt::format("Garbage collecting zombies... (step 2)"));
 					LeftOverSessions_ = 0;
 					for (int i = 0; i < SessionHash::HashMax(); i++) {
 						waits = 0;
@@ -557,15 +556,18 @@ namespace OpenWifi {
 								auto RightNow = Utils::Now();
 								while (hint != end(Sessions_[i])) {
 									if (hint->second == nullptr) {
+										++nullEntries;
 										hint = Sessions_[i].erase(hint);
 									} else if (hint->second->Dead_) {
+										++deadEntries;
 										// hint = Sessions_[i].erase(hint);
 										AddCleanupSession(hint->second->State_.sessionId, hint->second->SerialNumberInt_);
 										++hint;
 									} else if (RightNow > hint->second->LastContact_ &&
 											   (RightNow - hint->second->LastContact_) >
 												   SessionTimeOut_) {
-										poco_information(
+										++idleSessionEntries;
+										poco_debug(
 											LocalLogger,
 											fmt::format("{}: Session seems idle. Controller disconnecting device.",
 														hint->second->SerialNumber_));
@@ -591,7 +593,10 @@ namespace OpenWifi {
 					AverageDeviceConnectionTime_ = NumberOfConnectedDevices_ > 0
 													   ? total_connected_time / NumberOfConnectedDevices_
 													   : 0;
-					poco_information(LocalLogger, fmt::format("Garbage collecting zombies done..."));
+					poco_debug(LocalLogger, fmt::format(
+						"GARBAGE-COLLECTION idle_device_entries={} idle_session_entries={} dead_entries={} null_entries={} scan_ms={}",
+						idleDeviceEntries, idleSessionEntries, deadEntries, nullEntries,
+						std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - scanStarted).count()));
 				} catch (const Poco::Exception &E) {
 					poco_error(LocalLogger, fmt::format("Poco::Exception: Garbage collecting zombies failed: {}", E.displayText()));
 				} catch (const std::exception &E) {
@@ -634,7 +639,6 @@ namespace OpenWifi {
 				FullEvent.set("payload", KafkaNotification);
 
 				KafkaManager()->PostMessage(KafkaTopics::DEVICE_EVENT_QUEUE, "system", FullEvent);
-				LocalLogger.information(fmt::format("Garbage collection finished run."));
 				last_garbage_run = now;
 			} catch (const Poco::Exception &E) {
 				LocalLogger.error(fmt::format("Poco::Exception: Garbage collecting failed: {}", E.displayText()));
