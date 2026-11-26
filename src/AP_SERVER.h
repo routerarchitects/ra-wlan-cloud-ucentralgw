@@ -11,11 +11,14 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "AP_Connection.h"
@@ -150,8 +153,13 @@ namespace OpenWifi {
 		}
 
 		inline void AddCleanupSession(uint64_t session_id, uint64_t SerialNumber) {
-			std::lock_guard G(CleanupMutex_);
-			CleanupSessions_.emplace_back(session_id, SerialNumber);
+			{
+				std::lock_guard G(CleanupMutex_);
+				if (!CleanupScheduledSessions_.insert(session_id).second)
+					return; // Already queued or being processed.
+				CleanupSessions_.emplace_back(session_id, SerialNumber);
+			}
+			CleanupReady_.notify_one();
 		}
 
 		inline void IncrementConnectionCount() { ++NumberOfConnectedDevices_; }
@@ -219,7 +227,9 @@ namespace OpenWifi {
 		mutable std::array<std::mutex, MACHashMax> SerialNumbersMutex_;
 
 		std::mutex CleanupMutex_;
+		std::condition_variable CleanupReady_;
 		std::deque<std::pair<uint64_t, uint64_t>> CleanupSessions_;
+		std::unordered_set<uint64_t> CleanupScheduledSessions_;
 
 		std::atomic_bool Running_ = false;
 		std::uint64_t SessionTimeOut_ = 10 * 60;
@@ -238,7 +248,7 @@ namespace OpenWifi {
 		bool SimulatorEnabled_ = false;
 		bool AllowSerialNumberMismatch_ = true;
 		std::uint64_t MismatchDepth_ = 2;
-		Poco::Thread CleanupThread_;
+		std::thread CleanupThread_;
 		Poco::Thread GarbageCollector_;
 		std::string GarbageCollectorName;
 	};

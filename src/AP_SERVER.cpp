@@ -17,7 +17,10 @@ namespace OpenWifi {
 						 const std::string &SubSystem)
 		: SubSystemServer(Name, ShortName, SubSystem) {}
 
-	AP_Server::~AP_Server() = default;
+	AP_Server::~AP_Server() {
+		Running_ = false;
+		if (CleanupThread_.joinable()) CleanupThread_.join();
+	}
 
 	bool AP_Server::GetHealthDevices(std::uint64_t lowLimit, std::uint64_t highLimit,
 									 std::vector<std::string> &SerialNumbers) {
@@ -92,48 +95,59 @@ namespace OpenWifi {
 			Sessions_[sessionHash].erase(SessionHint);
 		}
 
+		// Do not destroy the old connection while holding the device-map lock:
+		// its destructor may publish disconnect events or revisit server state.
+		std::shared_ptr<AP_Connection> replacedConnection;
 		auto deviceHash = MACHash::Hash(SerialNumber);
-		std::lock_guard DeviceLock(SerialNumbersMutex_[deviceHash]);
-		SerialNumbers_[deviceHash][SerialNumber] = Connection;
+		{
+			std::lock_guard DeviceLock(SerialNumbersMutex_[deviceHash]);
+			auto &slot = SerialNumbers_[deviceHash][SerialNumber];
+			replacedConnection = std::move(slot);
+			slot = std::move(Connection);
+		}
 	}
 
 	bool AP_Server::EndSession(uint64_t session_id, uint64_t SerialNumber) {
+		// Keep erased connections alive until both map locks are released.
+		std::shared_ptr<AP_Connection> removedSession, removedDevice;
+		const auto started = std::chrono::steady_clock::now();
+		const auto sessionHash = SessionHash::Hash(session_id);
+		const auto hashIndex = MACHash::Hash(SerialNumber);
+		bool sessionErased = false, deviceErased = false;
+		const char *deviceOutcome = "not_found";
 		{
-			poco_trace(Logger(), fmt::format("Ending session 1: {} for device: {}", session_id,
-											 Utils::IntToSerialNumber(SerialNumber)));
-			auto sessionHash = SessionHash::Hash(session_id);
 			std::lock_guard SessionLock(SessionMutex_[sessionHash]);
-			Sessions_[sessionHash].erase(session_id);
-			poco_trace(Logger(), fmt::format("Ended session 1: {} for device: {}", session_id,
-											 Utils::IntToSerialNumber(SerialNumber)));
-		}
-
-		{
-			auto hashIndex = MACHash::Hash(SerialNumber);
-			poco_trace(Logger(), fmt::format("Ending session 2.0: {} for device: {} hi:{}",
-											 session_id, Utils::IntToSerialNumber(SerialNumber),
-											 hashIndex));
-			std::lock_guard DeviceLock(SerialNumbersMutex_[hashIndex]);
-			poco_trace(Logger(), fmt::format("Ending session 2.1: {} for device: {} hi:{}",
-											 session_id, Utils::IntToSerialNumber(SerialNumber),
-											 hashIndex));
-			auto DeviceHint = SerialNumbers_[hashIndex].find(SerialNumber);
-			poco_trace(Logger(), fmt::format("Ending session 2.2: {} for device: {} hi:{}",
-											 session_id, Utils::IntToSerialNumber(SerialNumber),
-											 hashIndex));
-			if (DeviceHint == SerialNumbers_[hashIndex].end() ||
-				DeviceHint->second == nullptr ||
-				DeviceHint->second->State_.sessionId != session_id) {
-				poco_trace(Logger(), fmt::format("Did not end session 2: {} for device: {}",
-												 session_id,
-												 Utils::IntToSerialNumber(SerialNumber)));
-				return false;
+			auto sessionIt = Sessions_[sessionHash].find(session_id);
+			if (sessionIt != Sessions_[sessionHash].end()) {
+				removedSession = std::move(sessionIt->second);
+				Sessions_[sessionHash].erase(sessionIt);
+				sessionErased = true;
 			}
-			SerialNumbers_[hashIndex].erase(DeviceHint);
-			poco_trace(Logger(), fmt::format("Ended session 2: {} for device: {}", session_id,
-											 Utils::IntToSerialNumber(SerialNumber)));
 		}
-		return true;
+		{
+			std::lock_guard DeviceLock(SerialNumbersMutex_[hashIndex]);
+			auto DeviceHint = SerialNumbers_[hashIndex].find(SerialNumber);
+			if (DeviceHint != SerialNumbers_[hashIndex].end()) {
+				if (!DeviceHint->second) {
+					deviceOutcome = "null_entry";
+				} else if (DeviceHint->second->State_.sessionId != session_id) {
+					deviceOutcome = "different_session_preserved";
+				} else {
+					removedDevice = std::move(DeviceHint->second);
+					SerialNumbers_[hashIndex].erase(DeviceHint);
+					deviceErased = true;
+					deviceOutcome = "removed";
+				}
+			}
+		}
+		poco_trace(Logger(), fmt::format(
+			"SESSION-CLEANUP session={} serial={} session_hash={} device_hash={} session_erased={} "
+			"device_erased={} device_outcome={} map_cleanup_us={}",
+			session_id, Utils::IntToSerialNumber(SerialNumber), sessionHash, hashIndex,
+			sessionErased, deviceErased, deviceOutcome,
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now() - started).count()));
+		return deviceErased;
 	}
 
 	bool AP_Server::Connected(uint64_t SerialNumber,
@@ -197,23 +211,33 @@ namespace OpenWifi {
 	}
 
 	void AP_Server::CleanupSessions() {
-
-		while(Running_) {
-			std::this_thread::sleep_for(std::chrono::seconds(10));
-
-			while(Running_) {
-				std::pair<uint64_t, uint64_t> Session;
-				{
-					std::lock_guard G(CleanupMutex_);
-					auto isEmpty = CleanupSessions_.empty();
-					if (isEmpty) {
-						break;
-					}
-					Session = CleanupSessions_.front();
-					CleanupSessions_.pop_front();
-				}
-				poco_trace(this->Logger(),fmt::format("Cleaning up session: {} for device: {}", Session.first, Utils::IntToSerialNumber(Session.second)));
+		while (Running_) {
+			std::pair<uint64_t, uint64_t> Session;
+			{
+				std::unique_lock G(CleanupMutex_);
+				// Wake on new work instead of leaving dead sockets registered for
+				// up to ten seconds. The timeout preserves bounded stop latency
+				// for existing Stop() paths that only clear Running_.
+				CleanupReady_.wait_for(G, std::chrono::seconds(10), [this]() {
+					return !Running_ || !CleanupSessions_.empty();
+				});
+				if (!Running_)
+					break;
+				if (CleanupSessions_.empty())
+					continue;
+				Session = CleanupSessions_.front();
+				CleanupSessions_.pop_front();
+			}
+			try {
 				EndSession(Session.first, Session.second);
+			} catch (const std::exception &e) {
+				poco_error(Logger(), fmt::format("Session cleanup {} failed: {}", Session.first, e.what()));
+			} catch (...) {
+				poco_error(Logger(), fmt::format("Session cleanup {} failed with unknown error", Session.first));
+			}
+			{
+				std::lock_guard G(CleanupMutex_);
+				CleanupScheduledSessions_.erase(Session.first);
 			}
 		}
 	}
@@ -444,8 +468,7 @@ namespace OpenWifi {
 		GarbageCollector_.setName(garbageName);
 		GarbageCollector_.start(*this);
 
-		std::thread CleanupThread([this](){ CleanupSessions(); });
-		CleanupThread.detach();
+		CleanupThread_ = std::thread([this](){ CleanupSessions(); });
 	}
 
 	void AP_Server::run() {

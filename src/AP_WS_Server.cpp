@@ -198,6 +198,8 @@ namespace OpenWifi {
 
 		GarbageCollector_.wakeUp();
 		GarbageCollector_.join();
+		// Wait for session cleanup before destroying server resources.
+		if (CleanupThread_.joinable()) CleanupThread_.join();
 
 		for (auto &server : WebServers_) {
 			server->stopAll();
