@@ -4,7 +4,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <mutex>
 #include <map>
 #include <string>
 
@@ -109,7 +111,9 @@ namespace OpenWifi {
 		bool IsFiltered(std::uint64_t id, const UI_WebSocketClientInfo &Client);
 
 	  private:
-		volatile bool Running_ = false;
+		std::atomic_bool Running_ = false;
+		// Serialize Start/Stop separately; never hold LocalMutex_ while joining.
+		std::mutex LifecycleMutex_;
 		std::atomic_uint64_t UsersConnected_ = 0;
 		Poco::Net::SocketReactor Reactor_;
 		Poco::Thread ReactorThread_;

@@ -72,8 +72,39 @@ namespace OpenWifi {
 				DevicePassword = ParamsObj->get("password").toString();
 			}
 
-			SerialNumber_ = Serial;
-			SerialNumberInt_ = Utils::SerialNumberToInt(SerialNumber_);
+			// The active device-map key is immutable for the lifetime of a session.
+			if (DeviceSessionStarted_ && Serial != SerialNumber_) {
+				poco_warning(Logger_, fmt::format(
+					"CONNECT({}): Session={} identity change rejected. Existing={} Requested={}",
+					CId_, State_.sessionId, SerialNumber_, Serial));
+				return EndConnection();
+			}
+
+			// Apply the existing certificate policy before StartSession can retire
+			// another AP. Preserve the simulator and configured mismatch exceptions.
+			if (State_.VerifiedCertificate == GWObjects::NO_CERTIFICATE) {
+				return EndConnection();
+			}
+			if (State_.VerifiedCertificate != GWObjects::SIMULATED) {
+				if (Utils::SerialNumberMatch(CN_, Serial, (int)GetAPServer()->MismatchDepth()) ||
+					GetAPServer()->IsSimSerialNumber(CN_)) {
+					State_.VerifiedCertificate = GWObjects::VERIFIED;
+				} else {
+					State_.VerifiedCertificate = GWObjects::MISMATCH_SERIAL;
+					if (!GetAPServer()->AllowSerialNumberMismatch()) {
+						poco_information(Logger_, fmt::format(
+							"CONNECT({}): Serial number mismatch disallowed. "
+							"Device rejected. CN={} Serial={} Session={}",
+							CId_, CN_, Serial, State_.sessionId));
+						return EndConnection();
+					}
+				}
+			}
+
+			if (!DeviceSessionStarted_) {
+				SerialNumber_ = Serial;
+				SerialNumberInt_ = Utils::SerialNumberToInt(SerialNumber_);
+			}
 
 			if (!GetAPServer()->StartSession(State_.sessionId, SerialNumberInt_))
 				return EndConnection();
@@ -270,39 +301,21 @@ namespace OpenWifi {
 				std::chrono::high_resolution_clock::now() - ConnectionStart_;
 			State_.connectionCompletionTime = ConnectionCompletionTime_.count();
 
-			if (State_.VerifiedCertificate == GWObjects::VALID_CERTIFICATE) {
-				if ((Utils::SerialNumberMatch(CN_, SerialNumber_,
-											  (int)GetAPServer()->MismatchDepth())) ||
-					GetAPServer()->IsSimSerialNumber(CN_)) {
-					State_.VerifiedCertificate = GWObjects::VERIFIED;
-					poco_debug(Logger_,
-									 fmt::format("CONNECT({}): Fully validated and authenticated "
-												 "device. Session={} ConnectionCompletion Time={} firmware={} config_uuid={} compatible={}",
-												 CId_, State_.sessionId, State_.connectionCompletionTime,
-												 State_.Firmware, State_.UUID, Compatible_));
-				} else {
-					State_.VerifiedCertificate = GWObjects::MISMATCH_SERIAL;
-					if (GetAPServer()->AllowSerialNumberMismatch()) {
-						poco_information(
-							Logger_,
-							fmt::format("CONNECT({}): Serial number mismatch allowed. CN={} "
-										"Serial={} Session={} ConnectionCompletion Time={}",
-										CId_, CN_, SerialNumber_, State_.sessionId,
-										State_.connectionCompletionTime));
-					} else {
-						poco_information(
-							Logger_, fmt::format("CONNECT({}): Serial number mismatch disallowed. "
-												 "Device rejected. CN={} Serial={} Session={}",
-												 CId_, CN_, SerialNumber_, State_.sessionId));
-						return EndConnection();
-					}
-				}
+			if (State_.VerifiedCertificate == GWObjects::VERIFIED) {
+				poco_debug(Logger_, fmt::format(
+					"CONNECT({}): Fully validated and authenticated device. Session={} "
+					"ConnectionCompletion Time={} firmware={} config_uuid={} compatible={}",
+					CId_, State_.sessionId, State_.connectionCompletionTime,
+					State_.Firmware, State_.UUID, Compatible_));
+			} else if (State_.VerifiedCertificate == GWObjects::MISMATCH_SERIAL) {
+				poco_information(Logger_, fmt::format(
+					"CONNECT({}): Serial number mismatch allowed. CN={} "
+					"Serial={} Session={} ConnectionCompletion Time={}",
+					CId_, CN_, SerialNumber_, State_.sessionId, State_.connectionCompletionTime));
 			} else {
-				poco_debug(Logger_,
-								 fmt::format("CONNECT({}): Simulator device. "
-											 "Session={} ConnectionCompletion Time={}",
-											 CId_, State_.sessionId,
-											 State_.connectionCompletionTime));
+				poco_debug(Logger_, fmt::format(
+					"CONNECT({}): Simulator device. Session={} ConnectionCompletion Time={}",
+					CId_, State_.sessionId, State_.connectionCompletionTime));
 			}
 
 			GWWebSocketNotifications::SingleDevice_t Notification;

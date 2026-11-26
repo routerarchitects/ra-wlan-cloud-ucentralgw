@@ -549,7 +549,7 @@ namespace OpenWifi {
 										auto RightNow = Utils::Now();
 										if (Device->Dead_) {
 											++deadEntries;
-											AddCleanupSession(Device->State_.sessionId, Device->SerialNumberInt_);
+											AddCleanupSession(Device->State_.sessionId, hint->first);
 											++hint;
 											// hint = SerialNumbers_[hashIndex].erase(hint);
 										} else if (RightNow > Device->LastContact_ &&
@@ -561,7 +561,7 @@ namespace OpenWifi {
 													"{}: Session seems idle. Controller disconnecting device.",
 													Device->SerialNumber_));
 											// hint = SerialNumbers_[hashIndex].erase(hint);
-											AddCleanupSession(Device->State_.sessionId, Device->SerialNumberInt_);
+											AddCleanupSession(Device->State_.sessionId, hint->first);
 											++hint;
 										} else {
 											if (Device->State_.Connected) {
@@ -597,8 +597,9 @@ namespace OpenWifi {
 										hint = Sessions_[i].erase(hint);
 									} else if (hint->second->Dead_) {
 										++deadEntries;
-										// hint = Sessions_[i].erase(hint);
-										AddCleanupSession(hint->second->State_.sessionId, hint->second->SerialNumberInt_);
+										// Pending sessions have no active device-map key. The cleanup
+										// admission fence prevents later promotion of a queued session.
+										AddCleanupSession(hint->first, 0);
 										++hint;
 									} else if (RightNow > hint->second->LastContact_ &&
 											   (RightNow - hint->second->LastContact_) >
@@ -606,9 +607,9 @@ namespace OpenWifi {
 										++idleSessionEntries;
 										poco_debug(
 											LocalLogger,
-											fmt::format("{}: Session seems idle. Controller disconnecting device.",
-														hint->second->SerialNumber_));
-										AddCleanupSession(hint->second->State_.sessionId, hint->second->SerialNumberInt_);
+												fmt::format("Session {} seems idle. Controller disconnecting pending session.",
+														hint->first));
+										AddCleanupSession(hint->first, 0);
 										++hint;
 										// hint = Sessions_[i].erase(hint);
 									} else {
