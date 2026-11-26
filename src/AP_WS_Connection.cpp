@@ -60,7 +60,7 @@ namespace OpenWifi {
 				return enabled_ && n && (!name || n->name() == name) && dynamic_cast<N *>(n);
 			}
 			bool accepts(const Poco::Notification::Ptr &n) const override {
-				return enabled_ && dynamic_cast<N *>(n.get());
+				return enabled_ && dynamic_cast<const N *>(n.get()) != nullptr;
 			}
 			Poco::AbstractObserver *clone() const override {
 				return new WeakAPObserver(connection_, handler_);
@@ -162,7 +162,18 @@ namespace OpenWifi {
 		std::lock_guard write(SocketWriteMutex_);
 		if (Dead_ || WritesDisabled_ || !GetAPServer()->Running()) return false;
 		try {
-			if (WS_->sendFrame(payload, length, flags) == length) return true;
+			// The pinned Poco implementation returns -1 while a frame is pending.
+			// Retry exactly the same frame under the write lock, with a short bound.
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+			for (;;) {
+				const int sent = WS_->sendFrame(payload, length, flags);
+				if (sent == length) return true;
+				if (sent != -1 || Dead_ || !GetAPServer()->Running() ||
+					std::chrono::steady_clock::now() >= deadline) break;
+				std::this_thread::sleep_for(std::chrono::milliseconds(2));
+				if (Dead_ || !GetAPServer()->Running() ||
+					std::chrono::steady_clock::now() >= deadline) break;
+			}
 		} catch (const Poco::Exception &e) {
 			TeardownStep("WebSocket send error log failed", [&] { Logger_.log(e); });
 		} catch (...) {
@@ -186,11 +197,13 @@ namespace OpenWifi {
 			ShutdownTransportLocked();
 		});
 		if (!SessionAdmitted_) return;
-		TeardownStep("Persist last contact failed", [&] {
-			if (!SerialNumber_.empty() && State_.LastContact != 0)
-				StorageService()->SetDeviceLastRecordedContact(SerialNumber_, State_.LastContact);
-		});
-		if (!SerialNumber_.empty()) DeviceDisconnectionCleanup(SerialNumber_, uuid_);
+		if (DeviceSessionStarted_) {
+			TeardownStep("Persist last contact failed", [&] {
+				if (!SerialNumber_.empty() && State_.LastContact != 0)
+					StorageService()->SetDeviceLastRecordedContact(SerialNumber_, State_.LastContact);
+			});
+			if (!SerialNumber_.empty()) DeviceDisconnectionCleanup(SerialNumber_, uuid_);
+		}
 		GetAPServer()->AddCleanupSession(State_.sessionId, SerialNumberInt_);
 	}
 
@@ -481,6 +494,15 @@ namespace OpenWifi {
 				return EndConnection();
 			}
 
+			// Control frames must be final and carry at most 125 bytes.
+			if ((Op & 0x08) != 0 &&
+				(!(flags & Poco::Net::WebSocket::FRAME_FLAG_FIN) || IncomingSize > 125 ||
+				 (Op == Poco::Net::WebSocket::FRAME_OP_CLOSE && IncomingSize == 1))) {
+				poco_warning(Logger_, fmt::format("INVALID-CONTROL-FRAME({}): opcode={} bytes={} flags={}",
+					CId_, Op, IncomingSize, flags));
+				return EndConnection();
+			}
+
 			if (IncomingSize > 0) {
 				State_.RX += IncomingSize;
 				GetAPServer()->AddRX(IncomingSize);
@@ -491,7 +513,8 @@ namespace OpenWifi {
 			switch (Op) {
 				case Poco::Net::WebSocket::FRAME_OP_PING: {
 					if (!WriteFrame(IncomingSize > 0 ? CurrentFrame.begin() : "", IncomingSize,
-							Poco::Net::WebSocket::FRAME_OP_PONG | Poco::Net::WebSocket::FRAME_FLAG_FIN))
+							static_cast<int>(Poco::Net::WebSocket::FRAME_OP_PONG) |
+							static_cast<int>(Poco::Net::WebSocket::FRAME_FLAG_FIN)))
 						return EndConnection();
 
 					if (KafkaManager()->Enabled()) {

@@ -75,10 +75,10 @@ namespace OpenWifi {
 			SerialNumber_ = Serial;
 			SerialNumberInt_ = Utils::SerialNumberToInt(SerialNumber_);
 
-			CommandManager()->ClearQueue(SerialNumberInt_);
-
 			if (!GetAPServer()->StartSession(State_.sessionId, SerialNumberInt_))
 				return EndConnection();
+
+			CommandManager()->ClearQueue(SerialNumberInt_);
 
 			Config::Capabilities Caps(Capabilities);
 

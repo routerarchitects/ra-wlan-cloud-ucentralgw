@@ -58,7 +58,7 @@ namespace OpenWifi {
 			if (KafkaManager()->Enabled()) NotifyKafkaDisconnect(SerialNumber, uuid);
 		});
 		TeardownStep("RADIUS session cleanup failed", [&] {
-			RADIUSSessionTracker()->DeviceDisconnect(SerialNumber);
+			RADIUSSessionTracker()->DeviceDisconnect(SerialNumber, State_.sessionId);
 		});
 		TeardownStep("UI disconnect notification failed", [&] {
 			GWWebSocketNotifications::SingleDevice_t N;
@@ -388,13 +388,14 @@ namespace OpenWifi {
 	}
 
 	void AP_Connection::ProcessIncomingRadiusData(const Poco::JSON::Object::Ptr &Doc) {
+		if (Dead_ || !DeviceSessionStarted_) return;
 		if (Doc->has(uCentralProtocol::RADIUSDATA)) {
 			auto Type = Doc->get(uCentralProtocol::RADIUS).toString();
 			if (Type == uCentralProtocol::RADIUSACCT) {
 				auto Data = Doc->get(uCentralProtocol::RADIUSDATA).toString();
 				auto DecodedData = Base64Decode(Data);
 				RADIUS_proxy_server()->SendAccountingData(SerialNumber_, DecodedData.c_str(),
-														  DecodedData.size());
+														  DecodedData.size(), State_.sessionId);
 			} else if (Type == uCentralProtocol::RADIUSAUTH) {
 				auto Data = Doc->get(uCentralProtocol::RADIUSDATA).toString();
 				auto DecodedData = Base64Decode(Data);

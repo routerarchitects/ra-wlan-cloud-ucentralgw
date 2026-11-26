@@ -130,17 +130,17 @@ namespace OpenWifi {
 
 			auto sessionId = ++session_id_;
 			KafkaConn = std::make_shared<AP_KAFKA_Connection>(Logger(), Session, sessionId);
-			if (!AddConnection(KafkaConn)) {
-				KafkaConn.reset();
-				return false;
-			}
-			KafkaConn->Start();
-			KafkaConn->setEssentials(DeviceInfo.ipAddress, serial, DeviceInfo.infraGroupId);
-			KafkaConn->setRecreation(DeviceInfo);
-			if (!StartSession(sessionId, KafkaConn->SerialNumberInt_)) {
-				KafkaConn->EndConnection();
-				KafkaConn.reset();
-				return false;
+			{
+				// Initialize before admission and serialize promotion with teardown.
+				std::lock_guard G(KafkaConn->ConnectionMutex_);
+				KafkaConn->Start();
+				KafkaConn->setEssentials(DeviceInfo.ipAddress, serial, DeviceInfo.infraGroupId);
+				KafkaConn->setRecreation(DeviceInfo);
+				if (!AddConnection(KafkaConn) ||
+					!StartSession(sessionId, KafkaConn->SerialNumberInt_)) {
+					KafkaConn->EndConnection();
+					return false;
+				}
 			}
 
 			poco_information(Logger(),
@@ -240,18 +240,14 @@ namespace OpenWifi {
 		auto sessionId = ++session_id_;
 		auto Session = NextDbSession();
 		auto NewConnection = std::make_shared<AP_KAFKA_Connection>( Logger(), Session, sessionId);
-		if (!AddConnection(NewConnection)) return;
-		NewConnection->Start();
-		NewConnection->setEssentials(IP, InfraSerial, InfraGroupId);
 		{
 			std::lock_guard G(NewConnection->ConnectionMutex_);
-			if (!NewConnection->PendingPayload_.empty()) {
-				poco_warning(Logger(),
-							 fmt::format("Infra_join overwriting pending payload for {}", serial));
-			}
+			NewConnection->Start();
+			NewConnection->setEssentials(IP, InfraSerial, InfraGroupId);
+			if (!AddConnection(NewConnection)) return;
 			NewConnection->PendingPayload_ = ConnectPayload;
+			NewConnection->ProcessIncomingFrame();
 		}
-		NewConnection->ProcessIncomingFrame();
 		poco_trace(Logger(),
 						 fmt::format("Infra_join: connected {} session={} key='{}'", serial, sessionId,
 									 key));
@@ -347,12 +343,10 @@ namespace OpenWifi {
 
 		{
 			std::lock_guard G(KafkaConn->ConnectionMutex_);
-			if (!KafkaConn->PendingPayload_.empty()) {
-				poco_warning(Logger(), fmt::format("Overwriting pending payload for {}", serial));
-			}
+			if (KafkaConn->Dead_) return;
 			KafkaConn->PendingPayload_ = payload;
+			KafkaConn->ProcessIncomingFrame();
 		}
-		KafkaConn->ProcessIncomingFrame();
 
 	}
 		

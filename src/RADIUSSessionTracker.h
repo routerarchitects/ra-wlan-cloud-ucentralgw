@@ -26,18 +26,19 @@ namespace OpenWifi {
 			ap_disconnect
 		};
 
-		explicit SessionNotification(NotificationType T, const std::string &Destination, const std::string &SerialNumber, const RADIUS::RadiusPacket &P, const std::string &secret)
-			: Type_(T), Destination_(Destination), SerialNumber_(SerialNumber), Packet_(P), Secret_(secret) {
+		explicit SessionNotification(NotificationType T, const std::string &Destination, const std::string &SerialNumber, const RADIUS::RadiusPacket &P, const std::string &secret, uint64_t apSessionId = 0)
+			: Type_(T), Destination_(Destination), SerialNumber_(SerialNumber), APSessionId_(apSessionId), Packet_(P), Secret_(secret) {
 		}
 
-		explicit SessionNotification(const std::string &SerialNumber)
-			: Type_(NotificationType::ap_disconnect), SerialNumber_(SerialNumber) {
+		explicit SessionNotification(const std::string &SerialNumber, uint64_t apSessionId)
+			: Type_(NotificationType::ap_disconnect), SerialNumber_(SerialNumber), APSessionId_(apSessionId) {
 
 		}
 
 		NotificationType			Type_;
 		std::string 				Destination_;
 		std::string 				SerialNumber_;
+		uint64_t					APSessionId_ = 0;
 		RADIUS::RadiusPacket		Packet_;
 		std::string					Secret_;
 	};
@@ -97,8 +98,8 @@ namespace OpenWifi {
 		void run() final;
 
 		inline void AddAccountingSession(const std::string &Destination, const std::string &SerialNumber,
-										 const RADIUS::RadiusPacket &P, const std::string &secret) {
-			SessionMessageQueue_.enqueueNotification(new SessionNotification(SessionNotification::NotificationType::accounting_session_message, Destination, SerialNumber, P, secret));
+										 const RADIUS::RadiusPacket &P, const std::string &secret, uint64_t apSessionId = 0) {
+			SessionMessageQueue_.enqueueNotification(new SessionNotification(SessionNotification::NotificationType::accounting_session_message, Destination, SerialNumber, P, secret, apSessionId));
 		}
 
 		inline void AddAuthenticationSession(const std::string &Destination, const std::string &SerialNumber,
@@ -116,8 +117,8 @@ namespace OpenWifi {
 			SessionMessageQueue_.enqueueNotification(new SessionNotification(SessionNotification::NotificationType::authentication_session_message, Destination, SerialNumber, P, secret));
 		}
 
-		inline void DeviceDisconnect(const std::string &serialNumber) {
-			SessionMessageQueue_.enqueueNotification(new SessionNotification(serialNumber));
+		inline void DeviceDisconnect(const std::string &serialNumber, uint64_t apSessionId) {
+			SessionMessageQueue_.enqueueNotification(new SessionNotification(serialNumber, apSessionId));
 		}
 
 		inline void GetAPList(std::vector<std::string> &SerialNumbers) {
@@ -194,7 +195,7 @@ namespace OpenWifi {
 
 		void ProcessAccountingSession(SessionNotification &Notification);
 		void ProcessAuthenticationSession(SessionNotification &Notification);
-		void DisconnectSession(const std::string &SerialNumber);
+		void DisconnectSession(const std::string &SerialNumber, uint64_t apSessionId);
 
 		RADIUSSessionTracker() noexcept
 			: SubSystemServer("RADIUSSessionTracker", "RADIUS-SESSION", "radius.session") {}

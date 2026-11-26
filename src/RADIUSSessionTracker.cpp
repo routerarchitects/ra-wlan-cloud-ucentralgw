@@ -87,7 +87,7 @@ namespace OpenWifi {
 							ProcessAuthenticationSession(*Session);
 						} break;
 						case SessionNotification::NotificationType::ap_disconnect: {
-							DisconnectSession(Session->SerialNumber_);
+							DisconnectSession(Session->SerialNumber_, Session->APSessionId_);
 						} break;
 					}
 				}
@@ -303,6 +303,7 @@ namespace OpenWifi {
 			NewSession->accountingSessionId = AccountingSessionId;
 			NewSession->accountingMultiSessionId = AccountingMultiSessionId;
 			NewSession->accountingPacket = Notification.Packet_;
+			NewSession->apSessionId = Notification.APSessionId_;
 			NewSession->destination = Notification.Destination_;
 			NewSession->inputOctets = InputOctets;
 			NewSession->inputPackets = InputPackets;
@@ -327,6 +328,7 @@ namespace OpenWifi {
 			} else {
 				poco_debug(Logger(),fmt::format("{}: Updating session", CallingStationId));
 				session_hint->second->accountingPacket = Notification.Packet_;
+				session_hint->second->apSessionId = Notification.APSessionId_;
 				session_hint->second->destination = Notification.Destination_;
 				session_hint->second->lastTransaction = Utils::Now();
 				session_hint->second->inputOctets = InputOctets;
@@ -419,7 +421,7 @@ namespace OpenWifi {
 		return true;
 	}
 
-	void RADIUSSessionTracker::DisconnectSession(const std::string &SerialNumber) {
+	void RADIUSSessionTracker::DisconnectSession(const std::string &SerialNumber, uint64_t apSessionId) {
 
 		std::lock_guard		Guard(Mutex_);
 		auto hint = AccountingSessions_.find(SerialNumber);
@@ -429,20 +431,27 @@ namespace OpenWifi {
 
 		poco_information(Logger(),fmt::format("{}: Disconnecting.", SerialNumber));
 
-		//	we need to go through all sessions and send an accounting stop
-		for(const auto &session:hint->second) {
-			poco_debug(Logger(), fmt::format("Stopping accounting for {}:{}", SerialNumber, session.first ));
+		// Stop only records belonging to this AP connection. Legacy untagged
+		// records are processed in FIFO order before replacement-session traffic.
+		for (auto it = hint->second.begin(); it != hint->second.end();) {
+			const auto &session = it->second;
+			if (session->apSessionId != 0 && session->apSessionId != apSessionId) {
+				++it;
+				continue;
+			}
+			poco_debug(Logger(), fmt::format("Stopping accounting for {}:{}", SerialNumber, it->first));
 
-			RADIUS::RadiusPacket	P(session.second->accountingPacket);
+			RADIUS::RadiusPacket	P(session->accountingPacket);
 
 			P.P_.identifier++;
 			P.ReplaceAttribute(RADIUS::Attributes::ACCT_STATUS_TYPE, (std::uint32_t) RADIUS::AccountingPacketTypes::ACCT_STATUS_TYPE_STOP);
 			P.ReplaceOrAdd(RADIUS::Attributes::EVENT_TIMESTAMP, (std::uint32_t) std::time(nullptr));
 			P.AppendAttribute(RADIUS::Attributes::ACCT_TERMINATE_CAUSE, (std::uint32_t) RADIUS::AccountingTerminationReasons::ACCT_TERMINATE_LOST_CARRIER);
-			RADIUS_proxy_server()->RouteAndSendAccountingPacket(session.second->destination, SerialNumber, P, true, session.second->secret);
+			RADIUS_proxy_server()->RouteAndSendAccountingPacket(session->destination, SerialNumber, P, true, session->secret);
+			it = hint->second.erase(it);
 		}
 
-		AccountingSessions_.erase(hint);
+		if (hint->second.empty()) AccountingSessions_.erase(hint);
 	}
 
 

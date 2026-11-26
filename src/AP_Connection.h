@@ -165,6 +165,8 @@ namespace OpenWifi {
 		std::atomic<bool> Dead_ = false;
 		// A rejected duplicate must not schedule cleanup for an admitted session.
 		std::atomic_bool SessionAdmitted_ = false;
+		// Set only on successful promotion to the active device map.
+		std::atomic_bool DeviceSessionStarted_ = false;
 		std::atomic_uint64_t SentBytes_ = 0;
 		std::atomic_bool DeviceValidated_ = false;
 		OpenWifi::GWObjects::DeviceRestrictions Restrictions_;

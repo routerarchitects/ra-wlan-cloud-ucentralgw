@@ -85,34 +85,43 @@ namespace OpenWifi {
 	bool AP_Server::StartSession(uint64_t session_id, uint64_t SerialNumber) {
 		const auto sessionHash = SessionHash::Hash(session_id);
 		const auto deviceHash = MACHash::Hash(SerialNumber);
-		std::shared_ptr<AP_Connection> replacedConnection;
-		{
-			// Promotion and removal must not leave a gap in map ownership.
-			std::scoped_lock maps(SessionMutex_[sessionHash], SerialNumbersMutex_[deviceHash]);
-			if (!Running_) return false;
-			auto &sessions = Sessions_[sessionHash];
-			auto &devices = SerialNumbers_[deviceHash];
-			auto it = sessions.find(session_id);
-			if (it == sessions.end()) {
-				// Preserve repeated connect processing for the same active session.
+		std::shared_ptr<AP_Connection> retired;
+		for (;;) {
+			std::shared_ptr<AP_Connection> previous;
+			{
+				std::scoped_lock maps(SessionMutex_[sessionHash], SerialNumbersMutex_[deviceHash]);
+				if (!Running_) return false;
+				auto &sessions = Sessions_[sessionHash];
+				auto &devices = SerialNumbers_[deviceHash];
+				auto it = sessions.find(session_id);
 				auto existing = devices.find(SerialNumber);
-				return existing != devices.end() && existing->second &&
-					existing->second->State_.sessionId == session_id && !existing->second->Dead_;
+				if (it == sessions.end()) {
+					return existing != devices.end() && existing->second &&
+						existing->second->State_.sessionId == session_id && !existing->second->Dead_;
+				}
+				if (it->second->Dead_) return false;
+				std::lock_guard cleanup(CleanupMutex_);
+				if (CleanupScheduledSessions_.count(session_id)) return false;
+				if (existing != devices.end() && existing->second && existing->second != retired) {
+					previous = existing->second;
+				} else {
+					auto &slot = devices[SerialNumber];
+					// The old connection has completed its synchronous teardown.
+					// Keep retired ownership outside all locks until return.
+					slot = std::move(it->second);
+					slot->DeviceSessionStarted_ = true;
+					sessions.erase(it);
+					return true;
+				}
 			}
-			if (it->second->Dead_) return false;
-			std::lock_guard cleanup(CleanupMutex_);
-			if (CleanupScheduledSessions_.count(session_id)) return false;
-			auto &slot = devices[SerialNumber];
-			replacedConnection = std::move(slot);
-			slot = std::move(it->second);
-			sessions.erase(it);
+			// Never acquire a connection lock while holding map locks.
+			// If another session won during teardown, recheck before promotion.
+			previous->EndConnection();
+			retired = std::move(previous);
 		}
-		// Release replaced ownership outside all map and cleanup locks.
-		return true;
 	}
 
 	bool AP_Server::EndSession(uint64_t session_id, uint64_t SerialNumber) {
-		// Keep erased connections alive until both map locks are released.
 		std::shared_ptr<AP_Connection> removedSession, removedDevice;
 		const auto started = std::chrono::steady_clock::now();
 		const auto sessionHash = SessionHash::Hash(session_id);
@@ -122,8 +131,21 @@ namespace OpenWifi {
 		{
 			std::scoped_lock maps(SessionMutex_[sessionHash], SerialNumbersMutex_[hashIndex]);
 			auto sessionIt = Sessions_[sessionHash].find(session_id);
-			if (sessionIt != Sessions_[sessionHash].end()) {
-				removedSession = std::move(sessionIt->second);
+			if (sessionIt != Sessions_[sessionHash].end()) removedSession = sessionIt->second;
+			auto device = SerialNumbers_[hashIndex].find(SerialNumber);
+			if (device != SerialNumbers_[hashIndex].end() && device->second &&
+				device->second->State_.sessionId == session_id)
+				removedDevice = device->second;
+		}
+		// Leave the active map entry visible until teardown completes so
+		// promotion cannot bypass old-session disconnect side effects.
+		if (removedSession) removedSession->EndConnection();
+		if (removedDevice && removedDevice != removedSession) removedDevice->EndConnection();
+		{
+			std::scoped_lock maps(SessionMutex_[sessionHash], SerialNumbersMutex_[hashIndex]);
+			auto sessionIt = Sessions_[sessionHash].find(session_id);
+			if (removedSession && sessionIt != Sessions_[sessionHash].end() &&
+				sessionIt->second == removedSession) {
 				Sessions_[sessionHash].erase(sessionIt);
 				sessionErased = true;
 			}
@@ -131,19 +153,16 @@ namespace OpenWifi {
 			if (DeviceHint != SerialNumbers_[hashIndex].end()) {
 				if (!DeviceHint->second) {
 					deviceOutcome = "null_entry";
-				} else if (DeviceHint->second->State_.sessionId != session_id) {
+				} else if (DeviceHint->second->State_.sessionId != session_id ||
+					(DeviceHint->second != removedSession && DeviceHint->second != removedDevice)) {
 					deviceOutcome = "different_session_preserved";
 				} else {
-					removedDevice = std::move(DeviceHint->second);
 					SerialNumbers_[hashIndex].erase(DeviceHint);
 					deviceErased = true;
 					deviceOutcome = "removed";
 				}
 			}
 		}
-		// Do not rely on destruction: another caller may still own the session.
-		if (removedSession) removedSession->EndConnection();
-		if (removedDevice && removedDevice != removedSession) removedDevice->EndConnection();
 		poco_trace(Logger(), fmt::format(
 			"SESSION-CLEANUP session={} serial={} session_hash={} device_hash={} session_erased={} "
 			"device_erased={} device_outcome={} map_cleanup_us={}",
@@ -193,25 +212,9 @@ namespace OpenWifi {
 	}
 	
 	bool AP_Server::Disconnect(uint64_t SerialNumber) {
-		std::shared_ptr<AP_Connection> Connection;
-		{
-			auto hashIndex = MACHash::Hash(SerialNumber);
-			std::lock_guard DeviceLock(SerialNumbersMutex_[hashIndex]);
-			auto DeviceHint = SerialNumbers_[hashIndex].find(SerialNumber);
-			if (DeviceHint == SerialNumbers_[hashIndex].end() || DeviceHint->second == nullptr) {
-				return false;
-			}
-			Connection = DeviceHint->second;
-			SerialNumbers_[hashIndex].erase(DeviceHint);
-		}
-
-		{
-			auto H = SessionHash::Hash(Connection->State_.sessionId);
-			std::lock_guard SessionLock(SessionMutex_[H]);
-			Sessions_[H].erase(Connection->State_.sessionId);
-		}
-
-		return true;
+		auto connection = GetConnection(SerialNumber);
+		if (!connection) return false;
+		return EndSession(connection->State_.sessionId, SerialNumber);
 	}
 
 	void AP_Server::CleanupSessions() {
