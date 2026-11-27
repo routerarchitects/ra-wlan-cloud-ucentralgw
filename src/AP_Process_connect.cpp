@@ -66,18 +66,46 @@ namespace OpenWifi {
 			uint64_t UUID = ParamsObj->get(uCentralProtocol::UUID);
 			auto Firmware = ParamsObj->get(uCentralProtocol::FIRMWARE).toString();
 			auto Capabilities = ParamsObj->getObject(uCentralProtocol::CAPABILITIES);
+			if (!Capabilities) return EndConnection();
 
 			std::string DevicePassword;
 			if(ParamsObj->has("password")) {
 				DevicePassword = ParamsObj->get("password").toString();
 			}
 
-			SerialNumber_ = Serial;
-			SerialNumberInt_ = Utils::SerialNumberToInt(SerialNumber_);
+			// The active device-map key is immutable for the lifetime of a session.
+			if (DeviceSessionStarted_ && Serial != SerialNumber_) {
+				poco_warning(Logger_, fmt::format(
+					"CONNECT({}): Session={} identity change rejected. Existing={} Requested={}",
+					CId_, State_.sessionId, SerialNumber_, Serial));
+				return EndConnection();
+			}
 
-			CommandManager()->ClearQueue(SerialNumberInt_);
+			// Apply the existing certificate policy before StartSession can retire
+			// another AP. Preserve the simulator and configured mismatch exceptions.
+			if (State_.VerifiedCertificate == GWObjects::NO_CERTIFICATE) {
+				return EndConnection();
+			}
+			if (State_.VerifiedCertificate != GWObjects::SIMULATED) {
+				if (Utils::SerialNumberMatch(CN_, Serial, (int)GetAPServer()->MismatchDepth()) ||
+					GetAPServer()->IsSimSerialNumber(CN_)) {
+					State_.VerifiedCertificate = GWObjects::VERIFIED;
+				} else {
+					State_.VerifiedCertificate = GWObjects::MISMATCH_SERIAL;
+					if (!GetAPServer()->AllowSerialNumberMismatch()) {
+						poco_information(Logger_, fmt::format(
+							"CONNECT({}): Serial number mismatch disallowed. "
+							"Device rejected. CN={} Serial={} Session={}",
+							CId_, CN_, Serial, State_.sessionId));
+						return EndConnection();
+					}
+				}
+			}
 
-			GetAPServer()->StartSession(State_.sessionId, SerialNumberInt_);
+			if (!DeviceSessionStarted_) {
+				SerialNumber_ = Serial;
+				SerialNumberInt_ = Utils::SerialNumberToInt(SerialNumber_);
+			}
 
 			Config::Capabilities Caps(Capabilities);
 
@@ -121,50 +149,67 @@ namespace OpenWifi {
 				State_.locale = "";
 			}
 			GWObjects::Device DeviceInfo;
-			std::lock_guard DbSessionLock(DbSession_->Mutex());
-
-			auto DeviceExists = StorageService()->GetDevice(DbSession_->Session(), SerialNumber_, DeviceInfo);
-			if (Daemon()->AutoProvisioning() && !DeviceExists) {
-				//	check the firmware version. if this is too old, we cannot let that device connect yet, we must
-				//	force a firmware upgrade
-				GWObjects::DefaultFirmware	MinimumFirmware;
-				if(FirmwareRevisionCache()->DeviceMustUpgrade(Compatible_, Firmware, MinimumFirmware)) {
-					Poco::JSON::Object	UpgradeCommand, Params;
-					UpgradeCommand.set(uCentralProtocol::JSONRPC,uCentralProtocol::JSONRPC_VERSION);
-					UpgradeCommand.set(uCentralProtocol::METHOD,uCentralProtocol::UPGRADE);
-					Params.set(uCentralProtocol::SERIALNUMBER, SerialNumber_);
-					Params.set(uCentralProtocol::WHEN, 0);
-					Params.set(uCentralProtocol::URI, MinimumFirmware.uri);
-					Params.set(uCentralProtocol::KEEP_REDIRECTOR,1);
-					UpgradeCommand.set(uCentralProtocol::PARAMS, Params);
-					UpgradeCommand.set(uCentralProtocol::ID, 1);
-
-					std::ostringstream Command;
-					UpgradeCommand.stringify(Command);
-					if(Send(Command.str())) {
-						poco_information(
-							Logger(),
-							fmt::format(
-								"Forcing device {} to upgrade to {} before connection is allowed.",
-								SerialNumber_, MinimumFirmware.revision));
-					} else {
-						poco_error(
-							Logger(),
-							fmt::format(
-								"Could not force device {} to upgrade to {} before connection is allowed.",
-								SerialNumber_, MinimumFirmware.revision));
-					}
-					return;
-				} else {
-					StorageService()->CreateDefaultDevice( DbSession_->Session(),
-						SerialNumber_, Caps, Firmware, PeerAddress_,
-						State_.VerifiedCertificate == GWObjects::SIMULATED, InfraGroupId_,State_.Address,
-						State_.locale);
-				}
-			} else if (!Daemon()->AutoProvisioning() && !DeviceExists) {
+			std::unique_lock DbSessionLock(DbSession_->Mutex());
+			const bool DeviceExists = StorageService()->GetDevice(DbSession_->Session(), SerialNumber_, DeviceInfo);
+			const bool AutoProvisioning = Daemon()->AutoProvisioning();
+			if (!AutoProvisioning && !DeviceExists) {
+				DbSessionLock.unlock();
 				SendKafkaDeviceNotProvisioned(SerialNumber_, Firmware, Compatible_, CId_);
 				poco_warning(Logger(),fmt::format("Device {} is a {} from {} and cannot be provisioned.",SerialNumber_,Compatible_, CId_));
 				return EndConnection();
+			}
+
+			// Do not retire a working session for a candidate that still needs a firmware upgrade.
+			GWObjects::DefaultFirmware MinimumFirmware;
+			if (AutoProvisioning && !DeviceExists &&
+				FirmwareRevisionCache()->DeviceMustUpgrade(Compatible_, Firmware, MinimumFirmware)) {
+				DbSessionLock.unlock();
+				Poco::JSON::Object	UpgradeCommand, Params;
+				UpgradeCommand.set(uCentralProtocol::JSONRPC,uCentralProtocol::JSONRPC_VERSION);
+				UpgradeCommand.set(uCentralProtocol::METHOD,uCentralProtocol::UPGRADE);
+				Params.set(uCentralProtocol::SERIALNUMBER, SerialNumber_);
+				Params.set(uCentralProtocol::WHEN, 0);
+				Params.set(uCentralProtocol::URI, MinimumFirmware.uri);
+				Params.set(uCentralProtocol::KEEP_REDIRECTOR,1);
+				UpgradeCommand.set(uCentralProtocol::PARAMS, Params);
+				UpgradeCommand.set(uCentralProtocol::ID, 1);
+
+				std::ostringstream Command;
+				UpgradeCommand.stringify(Command);
+				if(Send(Command.str())) {
+					poco_information(
+						Logger(),
+						fmt::format(
+							"Forcing device {} to upgrade to {} before connection is allowed.",
+							SerialNumber_, MinimumFirmware.revision));
+				} else {
+					poco_error(
+						Logger(),
+						fmt::format(
+							"Could not force device {} to upgrade to {} before connection is allowed.",
+							SerialNumber_, MinimumFirmware.revision));
+				}
+				return;
+			}
+
+			// All non-destructive checks precede promotion. Old-session teardown may
+			// access storage, so do not hold the shared DB-session mutex across it.
+			DbSessionLock.unlock();
+			bool ReplacedSession = false;
+			if (!GetAPServer()->StartSession(State_.sessionId, SerialNumberInt_, DeviceExists, &ReplacedSession))
+				return EndConnection();
+			CommandManager()->ClearQueue(SerialNumberInt_);
+			DbSessionLock.lock();
+			// Old-session teardown can persist last contact. Refresh only on replacement.
+			if (ReplacedSession && !StorageService()->GetDevice(DbSession_->Session(), SerialNumber_, DeviceInfo)) {
+				DbSessionLock.unlock();
+				return EndConnection();
+			}
+			if (AutoProvisioning && !DeviceExists) {
+				StorageService()->CreateDefaultDevice( DbSession_->Session(),
+					SerialNumber_, Caps, Firmware, PeerAddress_,
+					State_.VerifiedCertificate == GWObjects::SIMULATED, InfraGroupId_,State_.Address,
+					State_.locale);
 			} else if (DeviceExists) {
 				StorageService()->UpdateDeviceCapabilities(DbSession_->Session(), SerialNumber_, Caps);
 				int Updated{0};
@@ -269,39 +314,21 @@ namespace OpenWifi {
 				std::chrono::high_resolution_clock::now() - ConnectionStart_;
 			State_.connectionCompletionTime = ConnectionCompletionTime_.count();
 
-			if (State_.VerifiedCertificate == GWObjects::VALID_CERTIFICATE) {
-				if ((Utils::SerialNumberMatch(CN_, SerialNumber_,
-											  (int)GetAPServer()->MismatchDepth())) ||
-					GetAPServer()->IsSimSerialNumber(CN_)) {
-					State_.VerifiedCertificate = GWObjects::VERIFIED;
-					poco_information(Logger_,
-									 fmt::format("CONNECT({}): Fully validated and authenticated "
-												 "device. Session={} ConnectionCompletion Time={}",
-												 CId_, State_.sessionId,
-												 State_.connectionCompletionTime));
-				} else {
-					State_.VerifiedCertificate = GWObjects::MISMATCH_SERIAL;
-					if (GetAPServer()->AllowSerialNumberMismatch()) {
-						poco_information(
-							Logger_,
-							fmt::format("CONNECT({}): Serial number mismatch allowed. CN={} "
-										"Serial={} Session={} ConnectionCompletion Time={}",
-										CId_, CN_, SerialNumber_, State_.sessionId,
-										State_.connectionCompletionTime));
-					} else {
-						poco_information(
-							Logger_, fmt::format("CONNECT({}): Serial number mismatch disallowed. "
-												 "Device rejected. CN={} Serial={} Session={}",
-												 CId_, CN_, SerialNumber_, State_.sessionId));
-						return EndConnection();
-					}
-				}
+			if (State_.VerifiedCertificate == GWObjects::VERIFIED) {
+				poco_debug(Logger_, fmt::format(
+					"CONNECT({}): Fully validated and authenticated device. Session={} "
+					"ConnectionCompletion Time={} firmware={} config_uuid={} compatible={}",
+					CId_, State_.sessionId, State_.connectionCompletionTime,
+					State_.Firmware, State_.UUID, Compatible_));
+			} else if (State_.VerifiedCertificate == GWObjects::MISMATCH_SERIAL) {
+				poco_information(Logger_, fmt::format(
+					"CONNECT({}): Serial number mismatch allowed. CN={} "
+					"Serial={} Session={} ConnectionCompletion Time={}",
+					CId_, CN_, SerialNumber_, State_.sessionId, State_.connectionCompletionTime));
 			} else {
-				poco_information(Logger_,
-								 fmt::format("CONNECT({}): Simulator device. "
-											 "Session={} ConnectionCompletion Time={}",
-											 CId_, State_.sessionId,
-											 State_.connectionCompletionTime));
+				poco_debug(Logger_, fmt::format(
+					"CONNECT({}): Simulator device. Session={} ConnectionCompletion Time={}",
+					CId_, State_.sessionId, State_.connectionCompletionTime));
 			}
 
 			GWWebSocketNotifications::SingleDevice_t Notification;

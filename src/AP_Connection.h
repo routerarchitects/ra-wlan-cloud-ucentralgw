@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -77,6 +78,7 @@ namespace OpenWifi {
 			if (!Dead_) {
 				std::lock_guard G(ConnectionMutex_);
 				State = State_;
+				State.TX = SentBytes_.load(std::memory_order_relaxed);
 			}
 		}
 
@@ -119,6 +121,16 @@ namespace OpenWifi {
 		bool StartTelemetry(uint64_t RPCID, const std::vector<std::string> &TelemetryTypes);
 		bool StopTelemetry(uint64_t RPCID);
 		void UpdateCounts();
+		// Teardown must continue even if an operation or its error log fails.
+		template <typename F> void TeardownStep(const char *operation, F &&fn) noexcept {
+			try {
+				fn();
+			} catch (const std::exception &e) {
+				try { Logger_.error(std::string(operation) + ": " + e.what()); } catch (...) {}
+			} catch (...) {
+				try { Logger_.error(operation); } catch (...) {}
+			}
+		}
 		void DeviceDisconnectionCleanup(const std::string &SerialNumber, std::uint64_t uuid);
 		void SetLastStats(const std::string &LastStats);
 		std::string Base64Encode(const unsigned char *buffer, std::size_t size);
@@ -151,6 +163,11 @@ namespace OpenWifi {
 			std::chrono::high_resolution_clock::now();
 		std::chrono::duration<double, std::milli> ConnectionCompletionTime_{0.0};
 		std::atomic<bool> Dead_ = false;
+		// A rejected duplicate must not schedule cleanup for an admitted session.
+		std::atomic_bool SessionAdmitted_ = false;
+		// Set only on successful promotion to the active device map.
+		std::atomic_bool DeviceSessionStarted_ = false;
+		std::atomic_uint64_t SentBytes_ = 0;
 		std::atomic_bool DeviceValidated_ = false;
 		OpenWifi::GWObjects::DeviceRestrictions Restrictions_;
 		bool RTTYMustBeSecure_ = false;

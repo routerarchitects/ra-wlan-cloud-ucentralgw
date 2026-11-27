@@ -64,11 +64,11 @@ namespace OpenWifi {
 
 		GarbageCollector_.wakeUp();
 		GarbageCollector_.join();
-
 		if (WatcherId_ != 0) {
 			KafkaManager()->UnregisterTopicWatcher(KafkaTopics::CNC_RES, WatcherId_);
 			WatcherId_ = 0;
 		}
+		StopCleanupWorker();
 
 		poco_information(Logger(), "Stopped...");
 	}
@@ -130,11 +130,18 @@ namespace OpenWifi {
 
 			auto sessionId = ++session_id_;
 			KafkaConn = std::make_shared<AP_KAFKA_Connection>(Logger(), Session, sessionId);
-			AddConnection(KafkaConn);
-			KafkaConn->Start();
-			KafkaConn->setEssentials(DeviceInfo.ipAddress, serial, DeviceInfo.infraGroupId);
-			KafkaConn->setRecreation(DeviceInfo);
-			StartSession(sessionId, KafkaConn->SerialNumberInt_);
+			{
+				// Initialize before admission and serialize promotion with teardown.
+				std::lock_guard G(KafkaConn->ConnectionMutex_);
+				KafkaConn->Start();
+				KafkaConn->setEssentials(DeviceInfo.ipAddress, serial, DeviceInfo.infraGroupId);
+				KafkaConn->setRecreation(DeviceInfo);
+				if (!AddConnection(KafkaConn) ||
+					!StartSession(sessionId, KafkaConn->SerialNumberInt_)) {
+					KafkaConn->EndConnection();
+					return false;
+				}
+			}
 
 			poco_information(Logger(),
 							 fmt::format("Kafka msg: recreated connection for {} session={},infraGroupId:{}", serial, sessionId,DeviceInfo.infraGroupId));
@@ -226,25 +233,21 @@ namespace OpenWifi {
 			return;
 		}
 		if (Connected(Utils::SerialNumberToInt(serial))) {
-			poco_information(Logger(),
+			poco_debug(Logger(),
 							 fmt::format("Infra_join: device already connected: {}", serial));
 			return;
 		}
 		auto sessionId = ++session_id_;
 		auto Session = NextDbSession();
 		auto NewConnection = std::make_shared<AP_KAFKA_Connection>( Logger(), Session, sessionId);
-		AddConnection(NewConnection);
-		NewConnection->Start();
-		NewConnection->setEssentials(IP, InfraSerial, InfraGroupId);
 		{
 			std::lock_guard G(NewConnection->ConnectionMutex_);
-			if (!NewConnection->PendingPayload_.empty()) {
-				poco_warning(Logger(),
-							 fmt::format("Infra_join overwriting pending payload for {}", serial));
-			}
+			NewConnection->Start();
+			NewConnection->setEssentials(IP, InfraSerial, InfraGroupId);
+			if (!AddConnection(NewConnection)) return;
 			NewConnection->PendingPayload_ = ConnectPayload;
+			NewConnection->ProcessIncomingFrame();
 		}
-		NewConnection->ProcessIncomingFrame();
 		poco_trace(Logger(),
 						 fmt::format("Infra_join: connected {} session={} key='{}'", serial, sessionId,
 									 key));
@@ -288,7 +291,7 @@ namespace OpenWifi {
 
 		auto serialInt = Utils::SerialNumberToInt(InfraSerial);
 		if (!Connected(serialInt)) {
-			poco_information(Logger(),
+			poco_debug(Logger(),
 							 fmt::format("Infra_leave: Device Not Connected: {}", InfraSerial));
 			return;
 		}
@@ -300,7 +303,7 @@ namespace OpenWifi {
 		}
 
 		Conn->EndConnection();
-		poco_information(Logger(), fmt::format("Infra_leave: disconnected {}", InfraSerial));
+		poco_debug(Logger(), fmt::format("Infra_leave: disconnected {}", InfraSerial));
 	}
 
 	void AP_KAFKA_Server::HandleDeviceMessage(Poco::JSON::Object::Ptr msg, const std::string &key,
@@ -340,12 +343,10 @@ namespace OpenWifi {
 
 		{
 			std::lock_guard G(KafkaConn->ConnectionMutex_);
-			if (!KafkaConn->PendingPayload_.empty()) {
-				poco_warning(Logger(), fmt::format("Overwriting pending payload for {}", serial));
-			}
+			if (KafkaConn->Dead_) return;
 			KafkaConn->PendingPayload_ = payload;
+			KafkaConn->ProcessIncomingFrame();
 		}
-		KafkaConn->ProcessIncomingFrame();
 
 	}
 		
@@ -374,7 +375,7 @@ namespace OpenWifi {
 
 		auto serialInt = Utils::SerialNumberToInt(InfraSerial);
 		if (!Connected(serialInt)) {
-			poco_information(Logger(), fmt::format("GroupID Change: Device Not Connected: {}", InfraSerial));
+			poco_debug(Logger(), fmt::format("GroupID Change: Device Not Connected: {}", InfraSerial));
 			return;
 		}
 

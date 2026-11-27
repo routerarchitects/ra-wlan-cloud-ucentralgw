@@ -47,7 +47,7 @@ namespace OpenWifi {
 
 			std::lock_guard	Guard(DbSession_->Mutex());
 			if(!Simulated_) {
-				uint64_t UpgradedUUID;
+				uint64_t UpgradedUUID = UUID;
 				LookForUpgrade(DbSession_->Session(), UUID, UpgradedUUID);
 				State_.UUID = UpgradedUUID;
 			}

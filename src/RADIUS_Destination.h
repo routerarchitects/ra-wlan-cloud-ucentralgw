@@ -364,7 +364,7 @@ namespace OpenWifi {
 				for (const auto &PoolEntryServer : Pool_.acctConfig.servers) {
 					Poco::Net::SocketAddress Destination(PoolEntryServer.ip, PoolEntryServer.port);
 					try {
-						poco_information(Logger_, fmt::format("Attempting to connect to {}", CommonName()));
+						poco_debug(Logger_, fmt::format("Attempting to connect to {}", CommonName()));
 						Socket_->connect(Destination, Poco::Timespan(20, 0));
 						Socket_->completeHandshake();
 
@@ -454,7 +454,7 @@ namespace OpenWifi {
 				for (const auto &PoolEntryServer : Pool_.acctConfig.servers) {
 					Poco::Net::SocketAddress Destination(PoolEntryServer.ip, PoolEntryServer.port);
 					try {
-						poco_information(Logger_, "Attempting to connect");
+						poco_debug(Logger_, "Attempting to connect");
 						Socket_->connect(Destination, Poco::Timespan(100, 0));
 						Socket_->completeHandshake();
 
@@ -504,7 +504,7 @@ namespace OpenWifi {
 		}
 
 		inline bool Connect_Generic() {
-			poco_information(Logger_, fmt::format("Connecting {}", Pool_.name));
+			poco_debug(Logger_, fmt::format("Connecting {}", Pool_.name));
 			if (TryAgain_ && !Connected_) {
 
 				std::lock_guard G(LocalMutex_);

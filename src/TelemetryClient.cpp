@@ -47,12 +47,12 @@ namespace OpenWifi {
 								 Poco::NObserver<TelemetryClient, Poco::Net::ErrorNotification>(
 									 *this, &TelemetryClient::OnSocketError));
 		Registered_ = true;
-		poco_information(Logger(),
+		poco_debug(Logger(),
 						 fmt::format("TELEMETRY-CONNECTION({}): Connection completed.", CId_));
 	}
 
 	TelemetryClient::~TelemetryClient() {
-		poco_information(Logger(),
+		poco_debug(Logger(),
 						 fmt::format("TELEMETRY-CONNECTION({}): Closing connection.", CId_));
 		DeRegister();
 	}
@@ -79,7 +79,7 @@ namespace OpenWifi {
 	}
 
 	void TelemetryClient::SendTelemetryShutdown() {
-		poco_information(Logger(), fmt::format("TELEMETRY-SHUTDOWN({}): Closing.", CId_));
+		poco_debug(Logger(), fmt::format("TELEMETRY-SHUTDOWN({}): Closing.", CId_));
 		DeRegister();
 		GetAPServer()->StopWebSocketTelemetry(CommandManager()->Next_RPC_ID(), SerialNumber_);
 		TelemetryStream()->DeRegisterClient(UUID_);
@@ -87,7 +87,7 @@ namespace OpenWifi {
 
 	void TelemetryClient::OnSocketShutdown(
 		[[maybe_unused]] const Poco::AutoPtr<Poco::Net::ShutdownNotification> &pNf) {
-		poco_information(Logger(),
+		poco_debug(Logger(),
 						 fmt::format("TELEMETRY-SOCKET-SHUTDOWN({}): Orderly shutdown.", CId_));
 		SendTelemetryShutdown();
 	}
@@ -134,7 +134,7 @@ namespace OpenWifi {
 				poco_trace(Logger(),
 					fmt::format("TELEMETRY-EMPTY({}): Empty frame, non-blocking try-again.", CId_));
 			} else if (IncomingSize == 0 && flags == 0 && Op == 0) {
-				poco_information(Logger(),
+				poco_debug(Logger(),
 					fmt::format("TELEMETRY-DISCONNECT({}): device has disconnected.", CId_));
 				MustDisconnect = true;
 			} else {
@@ -145,11 +145,11 @@ namespace OpenWifi {
 								   (int)Poco::Net::WebSocket::FRAME_OP_PONG |
 								   (int)Poco::Net::WebSocket::FRAME_FLAG_FIN);
 				} else if (Op == Poco::Net::WebSocket::FRAME_OP_CLOSE) {
-					poco_information(Logger(),
+					poco_debug(Logger(),
 						fmt::format("TELEMETRY-DISCONNECT({}): device wants to disconnect.", CId_));
 					MustDisconnect = true;
 				} else if (Op == Poco::Net::WebSocket::FRAME_OP_CONT) {
-					poco_information(Logger(),
+					poco_trace(Logger(),
 						fmt::format("TELEMETRY-CONT({}): rx {} bytes.", CId_, IncomingSize));
 				}
 			}

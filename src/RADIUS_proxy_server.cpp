@@ -130,7 +130,7 @@ namespace OpenWifi {
 	}
 
 	void RADIUS_proxy_server::SendAccountingData( const std::string &serialNumber,
-												 const char *buffer, std::size_t size) {
+												 const char *buffer, std::size_t size, uint64_t apSessionId) {
 
 		if (!Continue())
 			return;
@@ -140,7 +140,7 @@ namespace OpenWifi {
 			auto Destination = P.ExtractProxyStateDestination();
 			std::string Secret;
 			RouteAndSendAccountingPacket(Destination, serialNumber, P, false, Secret);
-			RADIUSSessionTracker()->AddAccountingSession(Destination, serialNumber, P, Secret);
+			RADIUSSessionTracker()->AddAccountingSession(Destination, serialNumber, P, Secret, apSessionId);
 		} catch (const Poco::Exception &E) {
 			Logger().log(E);
 		} catch (...) {

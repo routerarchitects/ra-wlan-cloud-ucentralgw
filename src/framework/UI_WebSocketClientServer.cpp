@@ -28,6 +28,10 @@ namespace OpenWifi {
 											 const std::string &UserName, std::uint64_t TID) {
 
 		std::lock_guard G(LocalMutex_);
+		if (!Running_) {
+			WS.close();
+			return;
+		}
 		auto Client = std::make_unique<UI_WebSocketClientInfo>(WS, Id, UserName);
 		auto ClientSocket = Client->WS_->impl()->sockfd();
 		TID_ = TID;
@@ -56,12 +60,12 @@ namespace OpenWifi {
 		: SubSystemServer("WebSocketClientServer", "UI-WSCLNT-SVR", "websocketclients") {}
 
 	void UI_WebSocketClientServer::run() {
-		Running_ = true;
 		while (Running_) {
 			if(!Poco::Thread::trySleep(2000)) {
                 break;
             }
 			std::lock_guard G(LocalMutex_);
+			if (!Running_) break;
 			for (const auto i : ToBeRemoved_) {
 				// std::cout << "Erasing old WS UI connection..." << std::endl;
 				Clients_.erase(i);
@@ -72,46 +76,94 @@ namespace OpenWifi {
 	}
 
 	void UI_WebSocketClientServer::EndConnection(ClientList::iterator Client) {
-		if (Client->second->SocketRegistered_) {
-			Client->second->SocketRegistered_ = false;
-			Reactor_.removeEventHandler(
-				*Client->second->WS_,
-				Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ReadableNotification>(
-					*this, &UI_WebSocketClientServer::OnSocketReadable));
-			Reactor_.removeEventHandler(
-				*Client->second->WS_,
-				Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ShutdownNotification>(
-					*this, &UI_WebSocketClientServer::OnSocketShutdown));
-			Reactor_.removeEventHandler(
-				*Client->second->WS_,
-				Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ErrorNotification>(
-					*this, &UI_WebSocketClientServer::OnSocketError));
-		}
+		// Avoid inserting the same iterator twice when events race with removal.
+		if (!Client->second->SocketRegistered_) return;
+		Client->second->SocketRegistered_ = false;
+		Reactor_.removeEventHandler(
+			*Client->second->WS_,
+			Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ReadableNotification>(
+				*this, &UI_WebSocketClientServer::OnSocketReadable));
+		Reactor_.removeEventHandler(
+			*Client->second->WS_,
+			Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ShutdownNotification>(
+				*this, &UI_WebSocketClientServer::OnSocketShutdown));
+		Reactor_.removeEventHandler(
+			*Client->second->WS_,
+			Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ErrorNotification>(
+				*this, &UI_WebSocketClientServer::OnSocketError));
 		ToBeRemoved_.push_back(Client);
 	}
 
 	int UI_WebSocketClientServer::Start() {
+		std::lock_guard lifecycle(LifecycleMutex_);
+		if (Running_) return 0;
 		poco_information(Logger(), "Starting...");
 		GoogleApiKey_ = MicroServiceConfigGetString("google.apikey", "");
 		GeoCodeEnabled_ = !GoogleApiKey_.empty();
-		ReactorThread_.start(Reactor_);
-		ReactorThread_.setName("ws:ui-reactor");
-		CleanerThread_.start(*this);
-		CleanerThread_.setName("ws:ui-cleaner");
+		std::unique_lock clients(LocalMutex_);
+		bool reactorStarted = false;
+		try {
+			ReactorThread_.setName("ws:ui-reactor");
+			CleanerThread_.setName("ws:ui-cleaner");
+			ReactorThread_.start(Reactor_);
+			reactorStarted = true;
+			Running_ = true;
+			CleanerThread_.start(*this);
+		} catch (...) {
+			Running_ = false;
+			clients.unlock();
+			if (reactorStarted) {
+				Reactor_.stop();
+				ReactorThread_.join();
+			}
+			throw;
+		}
 		return 0;
 	};
 
 	void UI_WebSocketClientServer::Stop() {
-		if (Running_) {
-			poco_information(Logger(), "Stopping...");
-			Clients_.clear();
-			Reactor_.stop();
-			ReactorThread_.join();
-			Running_ = false;
-			CleanerThread_.wakeUp();
-			CleanerThread_.join();
-			poco_information(Logger(), "Stopped...");
+		std::lock_guard lifecycle(LifecycleMutex_);
+		{
+			// Close admission and synchronize with any in-flight client operation.
+			std::lock_guard clients(LocalMutex_);
+			if (!Running_.exchange(false)) return;
+			UsersConnected_ = 0;
 		}
+
+		poco_information(Logger(), "Stopping...");
+		// Do not hold LocalMutex_: reactor callbacks may be waiting for it.
+		CleanerThread_.wakeUp();
+		Reactor_.stop();
+		CleanerThread_.join();
+		ReactorThread_.join();
+
+		std::lock_guard clients(LocalMutex_);
+		// Both worker threads have exited; no callback can retain an iterator
+		// or block observer removal. Remove each registration before closing.
+		for (auto &entry : Clients_) {
+			auto &client = *entry.second;
+			auto remove = [&](const auto &observer) {
+				try {
+					Reactor_.removeEventHandler(*client.WS_, observer);
+				} catch (...) {
+					try { Logger().error("UI WebSocket observer removal failed during shutdown"); } catch (...) {}
+				}
+			};
+			remove(Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ReadableNotification>(
+				*this, &UI_WebSocketClientServer::OnSocketReadable));
+			remove(Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ShutdownNotification>(
+				*this, &UI_WebSocketClientServer::OnSocketShutdown));
+			remove(Poco::NObserver<UI_WebSocketClientServer, Poco::Net::ErrorNotification>(
+				*this, &UI_WebSocketClientServer::OnSocketError));
+			client.SocketRegistered_ = false;
+			try { client.WS_->close(); } catch (...) {
+				try { Logger().error("UI WebSocket close failed during shutdown"); } catch (...) {}
+			}
+		}
+		ToBeRemoved_.clear();
+		Clients_.clear();
+		UsersConnected_ = 0;
+		poco_information(Logger(), "Stopped...");
 	};
 
 	bool UI_WebSocketClientServer::IsFiltered(std::uint64_t id,
@@ -122,6 +174,7 @@ namespace OpenWifi {
 	bool UI_WebSocketClientServer::SendToUser(const std::string &UserName, std::uint64_t id,
 											  const std::string &Payload) {
 		std::lock_guard G(LocalMutex_);
+		if (!Running_) return false;
 
 		for (const auto &Client : Clients_) {
 			if (Client.second->UserName_ == UserName) {
@@ -142,6 +195,7 @@ namespace OpenWifi {
 
 	void UI_WebSocketClientServer::SendToAll(std::uint64_t id, const std::string &Payload) {
 		std::lock_guard G(LocalMutex_);
+		if (!Running_) return;
 
 		for (const auto &Client : Clients_) {
 			try {
@@ -186,6 +240,7 @@ namespace OpenWifi {
 	void UI_WebSocketClientServer::OnSocketError(
 		[[maybe_unused]] const Poco::AutoPtr<Poco::Net::ErrorNotification> &pNf) {
 		std::lock_guard G(LocalMutex_);
+		if (!Running_) return;
 		auto Client = Clients_.find(pNf->socket().impl()->sockfd());
 		if (Client == end(Clients_))
 			return;
@@ -195,34 +250,30 @@ namespace OpenWifi {
 	void UI_WebSocketClientServer::OnSocketReadable(
 		[[maybe_unused]] const Poco::AutoPtr<Poco::Net::ReadableNotification> &pNf) {
 
-		UI_WebSocketClientServer::ClientList::iterator Client;
 		std::lock_guard G(LocalMutex_);
+		if (!Running_) return;
+		auto Client = Clients_.end();
 
 		try {
 
 			Client = Clients_.find(pNf->socket().impl()->sockfd());
-			if (Client == end(Clients_))
+			if (Client == end(Clients_) || !Client->second->SocketRegistered_)
 				return;
 
 			Poco::Buffer<char> IncomingFrame(0);
-			int flags;
-			int n;
-			n = Client->second->WS_->receiveFrame(IncomingFrame, flags);
-			auto Op = flags & Poco::Net::WebSocket::FRAME_OP_BITMASK;
-
-			if (n == -1) {
-				poco_warning(Logger(),
-					fmt::format("UI-EMPTY({}): {} Empty Frame flags {}.",
-								Client->second->Id_, Client->second->UserName_, flags));
-				return;
-			}
-			if (n == 0) {
+			int flags = 0;
+			const int n = Client->second->WS_->receiveFrame(IncomingFrame, flags);
+			// Poco can return -1 with no frame bytes available. Retry on the next
+			// readable notification, without starting a false incomplete-frame timer.
+			if (n == -1) return;
+			if (n == 0 && flags == 0) {
 				poco_debug(Logger(),
 					fmt::format("CLOSE({}): {} UI Client is closing WS connection.",
 								Client->second->Id_, Client->second->UserName_));
 				return EndConnection(Client);
 			}
 
+			const auto Op = flags & Poco::Net::WebSocket::FRAME_OP_BITMASK;
 			switch (Op) {
 			case Poco::Net::WebSocket::FRAME_OP_PING: {
 				Client->second->WS_->sendFrame("", 0,
@@ -314,7 +365,7 @@ namespace OpenWifi {
 			}
 			}
 		} catch (...) {
-			return EndConnection(Client);
+			if (Client != Clients_.end()) EndConnection(Client);
 		}
 	}
 
@@ -322,6 +373,7 @@ namespace OpenWifi {
 		[[maybe_unused]] const Poco::AutoPtr<Poco::Net::ShutdownNotification> &pNf) {
 		try {
 			std::lock_guard G(LocalMutex_);
+			if (!Running_) return;
 			auto Client = Clients_.find(pNf->socket().impl()->sockfd());
 			if (Client == end(Clients_))
 				return;

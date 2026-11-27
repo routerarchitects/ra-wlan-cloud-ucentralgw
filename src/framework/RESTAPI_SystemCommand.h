@@ -5,6 +5,7 @@
 #pragma once
 
 #include "framework/RESTAPI_Handler.h"
+#include "framework/BoundedLoggingPolicy.h"
 
 #include "Poco/Environment.h"
 
@@ -79,6 +80,36 @@ namespace OpenWifi {
 					Answer.set("peakRealMem", peakRealMem);
 					Answer.set("currVirtMem", currVirtMem);
 					Answer.set("peakVirtMem", peakVirtMem);
+					// Keep production logging counters independent of optional memory diagnostics.
+					Poco::JSON::Object logStats, severityDrops;
+					{
+						using namespace BoundedLogging;
+						const auto read = [](const Counter &c) { return c.load(std::memory_order_relaxed); };
+						logStats.set("boundedAsyncEnabled", Metrics.enabled.load(std::memory_order_relaxed));
+						logStats.set("ingressedTotal", read(Metrics.ingressed));
+						logStats.set("completedTotal", read(Metrics.completed));
+						logStats.set("ingressRejectedTotal", read(Metrics.rejected));
+						logStats.set("sinkFailedTotal", read(Metrics.sinkFailed));
+						logStats.set("countLimitDroppedTotal", read(Metrics.countLimited));
+						logStats.set("byteLimitDroppedTotal", read(Metrics.byteLimited));
+						logStats.set("oversizedDroppedTotal", read(Metrics.oversized));
+						logStats.set("rateLimitedTotal", read(Metrics.rateLimited));
+						logStats.set("enqueueFailedTotal", read(Metrics.enqueueFailed));
+						logStats.set("closedRejectedTotal", read(Metrics.closedRejected));
+						logStats.set("pendingAdmissionSlots", read(Logging.pendingSlots));
+						logStats.set("pendingAccountedBytes", read(Logging.pendingBytes));
+						logStats.set("peakPendingAccountedBytesApprox", read(Metrics.peakPendingBytes));
+						logStats.set("criticalFallbackAttemptedTotal", read(Metrics.criticalFallbackAttempted));
+						logStats.set("criticalFallbackSuppressedTotal", read(Metrics.criticalFallbackSuppressed));
+						logStats.set("queueLimitMessages", LoggingQueueLimit());
+						logStats.set("queueLimitAccountedBytes", LoggingQueueBytesLimit());
+						logStats.set("maxMessageAccountedBytes", LoggingMessageBytesLimit());
+						logStats.set("verboseRateLimitPerSecond", LoggingVerboseRateLimit());
+						for (std::size_t i = 0; i < SeverityNames.size(); ++i)
+							severityDrops.set(SeverityNames[i], read(Metrics.droppedBySeverity[i]));
+						logStats.set("droppedBySeverity", severityDrops);
+					}
+					Answer.set("logging", logStats);
 					return ReturnObject(Answer);
 				}
 			}

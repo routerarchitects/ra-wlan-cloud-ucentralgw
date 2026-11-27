@@ -8,6 +8,7 @@
 //
 
 
+#include <Poco/AbstractObserver.h>
 #include <Poco/JSON/Parser.h>
 #include <Poco/JSON/JSONException.h>
 #include <Poco/Net/Context.h>
@@ -33,6 +34,45 @@
 
 namespace OpenWifi {
 
+	namespace {
+		// A registered observer owns only a weak reference. A callback takes a
+		// strong reference for its duration; failed observer removal cannot
+		// result in a callback dereferencing a destroyed AP. No callback mutex
+		// is held across connection processing (avoids a lock-order inversion).
+		template <typename N> class WeakAPObserver final : public Poco::AbstractObserver {
+			using Handler = void (AP_WS_Connection::*)(const Poco::AutoPtr<N> &);
+		  public:
+			WeakAPObserver(std::weak_ptr<AP_WS_Connection> connection, Handler handler)
+				: connection_(std::move(connection)), handler_(handler) {}
+			void notify(Poco::Notification *notification) const override {
+				if (!enabled_) return;
+				if (auto connection = connection_.lock()) {
+					if (auto *n = dynamic_cast<N *>(notification); n && enabled_)
+						(connection.get()->*handler_)(Poco::AutoPtr<N>(n, true));
+				}
+			}
+			bool equals(const Poco::AbstractObserver &other) const override {
+				auto *o = dynamic_cast<const WeakAPObserver *>(&other);
+				return o && handler_ == o->handler_ &&
+					!connection_.owner_before(o->connection_) && !o->connection_.owner_before(connection_);
+			}
+			bool accepts(Poco::Notification *n, const char *name) const override {
+				return enabled_ && n && (!name || n->name() == name) && dynamic_cast<N *>(n);
+			}
+			bool accepts(const Poco::Notification::Ptr &n) const override {
+				return enabled_ && dynamic_cast<const N *>(n.get()) != nullptr;
+			}
+			Poco::AbstractObserver *clone() const override {
+				return new WeakAPObserver(connection_, handler_);
+			}
+			void disable() override { enabled_ = false; }
+		  private:
+			std::weak_ptr<AP_WS_Connection> connection_;
+			Handler handler_;
+			std::atomic_bool enabled_{true};
+		};
+	}
+
 	AP_WS_Connection::AP_WS_Connection(Poco::Net::HTTPServerRequest &request,
 									   Poco::Net::HTTPServerResponse &response,
 									   uint64_t session_id, Poco::Logger &L,
@@ -57,57 +97,114 @@ namespace OpenWifi {
 	}
 
 	void AP_WS_Connection::Start() {
+		std::lock_guard G(ConnectionMutex_);
+		if (Dead_ || !GetAPServer()->Running()) {
+			EndConnection();
+			return;
+		}
 		Registered_ = true;
 		LastContact_ = Utils::Now();
-
-		Reactor_->addEventHandler(*WS_,
-								  Poco::NObserver<AP_WS_Connection, Poco::Net::ReadableNotification>(
-									  *this, &AP_WS_Connection::OnSocketReadable));
-		Reactor_->addEventHandler(*WS_,
-								  Poco::NObserver<AP_WS_Connection, Poco::Net::ShutdownNotification>(
-									  *this, &AP_WS_Connection::OnSocketShutdown));
-		Reactor_->addEventHandler(*WS_,
-								  Poco::NObserver<AP_WS_Connection, Poco::Net::ErrorNotification>(
-									  *this, &AP_WS_Connection::OnSocketError));
-
+		try {
+			Reactor_->addEventHandler(*WS_, WeakAPObserver<Poco::Net::ReadableNotification>(
+				weak_from_this(), &AP_WS_Connection::OnSocketReadable));
+			Reactor_->addEventHandler(*WS_, WeakAPObserver<Poco::Net::ShutdownNotification>(
+				weak_from_this(), &AP_WS_Connection::OnSocketShutdown));
+			Reactor_->addEventHandler(*WS_, WeakAPObserver<Poco::Net::ErrorNotification>(
+				weak_from_this(), &AP_WS_Connection::OnSocketError));
+		} catch (...) {
+			// Registration can fail after installing some observers.
+			EndConnection();
+			throw;
+		}
 	}
 
 	AP_WS_Connection::~AP_WS_Connection() {
-		std::lock_guard G(ConnectionMutex_);
+		// Callbacks hold a strong reference. Remove observers independently
+		// while the descriptor is valid, even if an earlier operation fails.
+		if (Registered_.exchange(false)) {
+			TeardownStep("Remove readable observer failed", [&] {
+				Reactor_->removeEventHandler(*WS_, WeakAPObserver<Poco::Net::ReadableNotification>(
+					weak_from_this(), &AP_WS_Connection::OnSocketReadable));
+			});
+			TeardownStep("Remove shutdown observer failed", [&] {
+				Reactor_->removeEventHandler(*WS_, WeakAPObserver<Poco::Net::ShutdownNotification>(
+					weak_from_this(), &AP_WS_Connection::OnSocketShutdown));
+			});
+			TeardownStep("Remove error observer failed", [&] {
+				Reactor_->removeEventHandler(*WS_, WeakAPObserver<Poco::Net::ErrorNotification>(
+					weak_from_this(), &AP_WS_Connection::OnSocketError));
+			});
+		}
+		TeardownStep("End connection failed", [&] { EndConnection(); });
+		TeardownStep("Close socket failed", [&] {
+			std::lock_guard write(SocketWriteMutex_);
+			WS_->close();
+		});
 		GetAPServer()->DecrementConnectionCount();
-		EndConnection();
-		poco_debug(Logger_, fmt::format("TERMINATION({}): Session={}, Connection removed.", SerialNumber_,
-										State_.sessionId));
+		TeardownStep("Termination log failed", [&] {
+			poco_debug(Logger_, fmt::format("TERMINATION({}): Session={}, Connection removed.",
+				SerialNumber_, State_.sessionId));
+		});
+	}
+
+	void AP_WS_Connection::ShutdownTransportLocked() noexcept {
+		WritesDisabled_ = true;
+		// WebSocket::shutdown sends a CLOSE frame; virtual TLS shutdown may
+		// require a retry. This is forced teardown: use native TCP shutdown,
+		// preserving the descriptor for reactor removal and final close.
+		TeardownStep("TCP shutdown failed", [&] {
+			using Poco::Net::SocketImpl;
+			WS_->impl()->SocketImpl::shutdown();
+		});
+	}
+
+	bool AP_WS_Connection::WriteFrame(const void *payload, int length, int flags) {
+		std::lock_guard write(SocketWriteMutex_);
+		if (Dead_ || WritesDisabled_ || !GetAPServer()->Running()) return false;
+		try {
+			// The pinned Poco implementation returns -1 while a frame is pending.
+			// Retry exactly the same frame under the write lock, with a short bound.
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+			for (;;) {
+				const int sent = WS_->sendFrame(payload, length, flags);
+				if (sent == length) return true;
+				if (sent != -1 || Dead_ || !GetAPServer()->Running() ||
+					std::chrono::steady_clock::now() >= deadline) break;
+				std::this_thread::sleep_for(std::chrono::milliseconds(2));
+				if (Dead_ || !GetAPServer()->Running() ||
+					std::chrono::steady_clock::now() >= deadline) break;
+			}
+		} catch (const Poco::Exception &e) {
+			TeardownStep("WebSocket send error log failed", [&] { Logger_.log(e); });
+		} catch (...) {
+			TeardownStep("WebSocket send error log failed", [&] { Logger_.error("WebSocket send failed"); });
+		}
+		// Poco retains an incomplete nonblocking frame and requires the same
+		// payload on retry. Do not allow a later command/PONG to reuse that
+		// pending frame. Fail this send and wake the reactor for teardown.
+		ShutdownTransportLocked();
+		return false;
 	}
 
 	void AP_WS_Connection::EndConnection() {
-		bool expectedValue=false;
-		if (Dead_.compare_exchange_strong(expectedValue,true,std::memory_order_release,std::memory_order_relaxed)) {
+		std::lock_guard G(ConnectionMutex_);
+		bool expectedValue = false;
+		if (!Dead_.compare_exchange_strong(expectedValue, true,
+				std::memory_order_acq_rel)) return;
 
-			if(!SerialNumber_.empty() && State_.LastContact!=0) {
-				StorageService()->SetDeviceLastRecordedContact(SerialNumber_, State_.LastContact);
-			}
-
-			if (Registered_) {
-				Registered_ = false;
-				Reactor_->removeEventHandler(
-					*WS_, Poco::NObserver<AP_WS_Connection, Poco::Net::ReadableNotification>(
-							  *this, &AP_WS_Connection::OnSocketReadable));
-				Reactor_->removeEventHandler(
-					*WS_, Poco::NObserver<AP_WS_Connection, Poco::Net::ShutdownNotification>(
-							  *this, &AP_WS_Connection::OnSocketShutdown));
-				Reactor_->removeEventHandler(
-					*WS_, Poco::NObserver<AP_WS_Connection, Poco::Net::ErrorNotification>(
-							  *this, &AP_WS_Connection::OnSocketError));
-				Registered_=false;
-			}
-			WS_->close();
-
-			if(!SerialNumber_.empty()) {
-				DeviceDisconnectionCleanup(SerialNumber_, uuid_);
-			}
-			GetAPServer()->AddCleanupSession(State_.sessionId, SerialNumberInt_);
+		TeardownStep("Transport shutdown failed", [&] {
+			std::lock_guard write(SocketWriteMutex_);
+			ShutdownTransportLocked();
+		});
+		if (!SessionAdmitted_) return;
+		if (DeviceSessionStarted_) {
+			TeardownStep("Persist last contact failed", [&] {
+				if (!SerialNumber_.empty() && State_.LastContact != 0)
+					StorageService()->SetDeviceLastRecordedContact(SerialNumber_, State_.LastContact);
+			});
+			if (!SerialNumber_.empty()) DeviceDisconnectionCleanup(SerialNumber_, uuid_);
 		}
+		GetAPServer()->AddCleanupSession(State_.sessionId, SerialNumberInt_);
 	}
 
 	bool AP_WS_Connection::ValidatedDevice() {
@@ -263,27 +360,45 @@ namespace OpenWifi {
 
 	void AP_WS_Connection::OnSocketShutdown(
 		[[maybe_unused]] const Poco::AutoPtr<Poco::Net::ShutdownNotification> &pNf) {
+		// The observer must remain registered until safe destruction. Avoid
+		// formatting logs or taking the connection lock for already-dead sockets.
+		if (Dead_.load(std::memory_order_acquire)) {
+			return;
+		}
+		std::lock_guard G(ConnectionMutex_);
+		// Recheck under the recursive mutex shared with EndConnection() so only
+		// the callback that actually initiates teardown can emit this log.
+		if (Dead_.load(std::memory_order_acquire)) {
+			return;
+		}
 		poco_trace(Logger_, fmt::format("SOCKET-SHUTDOWN({}): Closing.", CId_));
-//		std::lock_guard	G(ConnectionMutex_);
 		return EndConnection();
 	}
 
 	void AP_WS_Connection::OnSocketError(
 		[[maybe_unused]] const Poco::AutoPtr<Poco::Net::ErrorNotification> &pNf) {
+		// The observer must remain registered until safe destruction. Avoid
+		// formatting logs or taking the connection lock for already-dead sockets.
+		if (Dead_.load(std::memory_order_acquire)) {
+			return;
+		}
+		std::lock_guard G(ConnectionMutex_);
+		// Recheck under the recursive mutex shared with EndConnection() so only
+		// the callback that actually initiates teardown can emit this log.
+		if (Dead_.load(std::memory_order_acquire)) {
+			return;
+		}
 		poco_trace(Logger_, fmt::format("SOCKET-ERROR({}): Closing.", CId_));
-//		std::lock_guard	G(ConnectionMutex_);
 		return EndConnection();
 	}
 
 	void AP_WS_Connection::OnSocketReadable(
 		[[maybe_unused]] const Poco::AutoPtr<Poco::Net::ReadableNotification> &pNf) {
 
-		if (Dead_) //	we are dead, so we do not process anything.
-			return;
-
-		std::lock_guard	G(ConnectionMutex_);
-
-		State_.LastContact = LastContact_ = Utils::Now();
+		if (Dead_.load(std::memory_order_acquire)) return;
+		std::lock_guard G(ConnectionMutex_);
+		if (Dead_.load(std::memory_order_acquire)) return;
+		if (WritesDisabled_) return EndConnection();
 		if (GetAPServer()->Running() && (DeviceValidated_ || ValidatedDevice())) {
 			try {
 				return ProcessIncomingFrame();
@@ -313,13 +428,26 @@ namespace OpenWifi {
 		}
 		IncomingFrame_.append(0);
 
-		poco_trace(Logger_,
-				   fmt::format("ProcessWSFrame({}): Final Acc. Frame received (len={}, Msg={}",
-							   CId_, IncomingSize, IncomingFrame_.begin()));
 
 		Poco::JSON::Parser parser;
 		auto ParsedMessage = parser.parse(IncomingFrame_.begin());
 		auto IncomingJSON = ParsedMessage.extract<Poco::JSON::Object::Ptr>();
+		// Trace metadata once per assembled message; never dump raw payloads.
+		// A diagnostic conversion must not change protocol processing.
+		try {
+			if (Logger_.trace()) {
+				poco_trace(Logger_, fmt::format(
+			"WS-MESSAGE({}): session={} bytes={} method={:.128} rpc_id={:.128} jsonrpc={} radius={}",
+			CId_, State_.sessionId, IncomingSize,
+			IncomingJSON->has(uCentralProtocol::METHOD)
+				? IncomingJSON->get(uCentralProtocol::METHOD).toString() : "-",
+			IncomingJSON->has(uCentralProtocol::ID)
+				? IncomingJSON->get(uCentralProtocol::ID).toString() : "-",
+			IncomingJSON->has(uCentralProtocol::JSONRPC), IncomingJSON->has(uCentralProtocol::RADIUS)));
+			}
+		} catch (...) {
+			// Best-effort metadata only; retain existing dispatch semantics.
+		}
 
 		if (IncomingJSON->has(uCentralProtocol::JSONRPC)) {
 			if (IncomingJSON->has(uCentralProtocol::METHOD) &&
@@ -327,24 +455,18 @@ namespace OpenWifi {
 				ProcessJSONRPCEvent(IncomingJSON);
 			} else if (IncomingJSON->has(uCentralProtocol::RESULT) &&
 					   IncomingJSON->has(uCentralProtocol::ID)) {
-				poco_trace(Logger_, fmt::format("RPC-RESULT({}): payload: {}", CId_,
-												IncomingFrame_.begin()));
 				ProcessJSONRPCResult(IncomingJSON);
 			} else {
 				poco_warning(
 					Logger_,
-					fmt::format("INVALID-PAYLOAD({}): Payload is not JSON-RPC 2.0: {}",
-								CId_, IncomingFrame_.begin()));
+					fmt::format("INVALID-PAYLOAD({}): invalid JSON-RPC envelope session={} bytes={}",
+								CId_, State_.sessionId, IncomingSize));
 			}
 		} else if (IncomingJSON->has(uCentralProtocol::RADIUS)) {
 			ProcessIncomingRadiusData(IncomingJSON);
 		} else {
-			std::ostringstream iS;
-			IncomingJSON->stringify(iS);
-			poco_warning(
-				Logger_,
-				fmt::format("FRAME({}): illegal transaction header, missing 'jsonrpc': {}",
-							CId_, iS.str()));
+			poco_warning(Logger_, fmt::format(
+				"FRAME({}): missing jsonrpc header session={} bytes={}", CId_, State_.sessionId, IncomingSize));
 			Errors_++;
 		}
 		IncomingFrame_.clear();
@@ -363,34 +485,38 @@ namespace OpenWifi {
 
 			Op = flags & Poco::Net::WebSocket::FRAME_OP_BITMASK;
 
-			if (IncomingSize < 0 && flags == 0) {
-				poco_trace(Logger_,
-					fmt::format("EMPTY({}): Non-blocking try-again empty frame (len={}, flags={})",
-							   CId_, IncomingSize, flags));
-            } else if (IncomingSize == 0 && flags == 0) {
-				poco_information(Logger_,
+			if (IncomingSize < 0) {
+				// EAGAIN from a non-blocking socket: there is no frame to process.
+				return;
+			} else if (IncomingSize == 0 && flags == 0) {
+				poco_debug(Logger_,
 								 fmt::format("DISCONNECT({}): device has disconnected. Session={}",
 											 CId_, State_.sessionId));
+				return EndConnection();
+			}
+
+			// Control frames must be final and carry at most 125 bytes.
+			if ((Op & 0x08) != 0 &&
+				(!(flags & Poco::Net::WebSocket::FRAME_FLAG_FIN) || IncomingSize > 125 ||
+				 (Op == Poco::Net::WebSocket::FRAME_OP_CLOSE && IncomingSize == 1))) {
+				poco_warning(Logger_, fmt::format("INVALID-CONTROL-FRAME({}): opcode={} bytes={} flags={}",
+					CId_, Op, IncomingSize, flags));
 				return EndConnection();
 			}
 
 			if (IncomingSize > 0) {
 				State_.RX += IncomingSize;
 				GetAPServer()->AddRX(IncomingSize);
-				IncomingFrame_.append(CurrentFrame);
 			}
 			State_.MessageCount++;
-			State_.LastContact = Utils::Now();
-			poco_trace(Logger_,
-					   fmt::format("FRAME({}): Frame rx (op={} len={}, flags={}, acc.len={})",
-								   CId_, Op, IncomingSize, flags, IncomingFrame_.size()));
+			State_.LastContact = LastContact_ = Utils::Now();
 
 			switch (Op) {
 				case Poco::Net::WebSocket::FRAME_OP_PING: {
-					poco_trace(Logger_, fmt::format("PING({}): received. PONG sent back.", CId_));
-					WS_->sendFrame("", 0,
-								   (int)Poco::Net::WebSocket::FRAME_OP_PONG |
-								   (int)Poco::Net::WebSocket::FRAME_FLAG_FIN);
+					if (!WriteFrame(IncomingSize > 0 ? CurrentFrame.begin() : "", IncomingSize,
+							static_cast<int>(Poco::Net::WebSocket::FRAME_OP_PONG) |
+							static_cast<int>(Poco::Net::WebSocket::FRAME_FLAG_FIN)))
+						return EndConnection();
 
 					if (KafkaManager()->Enabled()) {
 						Poco::JSON::Object PingObject;
@@ -403,38 +529,33 @@ namespace OpenWifi {
 						PingDetails.set(uCentralProtocol::UUID, uuid_);
 						PingDetails.set("locale", State_.locale);
 						PingObject.set(uCentralProtocol::PING, PingDetails);
-						poco_trace(Logger_,fmt::format("Sending PING for {}", SerialNumber_));
 						KafkaManager()->PostMessage(KafkaTopics::CONNECTION, SerialNumber_,
 													PingObject);
 					}
+					poco_trace(Logger_, fmt::format("PING({}): session={} bytes={} flags={} reply=pong kafka_enabled={}", CId_, State_.sessionId, IncomingSize, flags, KafkaManager()->Enabled()));
 					return;
 				} break;
 
 				case Poco::Net::WebSocket::FRAME_OP_PONG: {
-					poco_trace(Logger_, fmt::format("PONG({}): received and ignored.", CId_));
+					poco_trace(Logger_, fmt::format("PONG({}): session={} bytes={} flags={} outcome=ignored", CId_, State_.sessionId, IncomingSize, flags));
 					return;
 				} break;
 
 				case Poco::Net::WebSocket::FRAME_OP_CONT: {
-					poco_trace(Logger_, fmt::format("CONTINUATION({}): registered.", CId_));
 				} break;
 
 				case Poco::Net::WebSocket::FRAME_OP_BINARY: {
 					poco_trace(Logger_, fmt::format("BINARY({}): Invalid frame type.", CId_));
 					KillConnection=true;
-					return;
+					break;
 				} break;
 
 				case Poco::Net::WebSocket::FRAME_OP_TEXT: {
-					poco_trace(Logger_,
-							   fmt::format("TEXT({}): Frame received (len={}, flags={}). Msg={}",
-										   CId_, IncomingSize, flags,
-										   CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin()));
 				} break;
 
 				case Poco::Net::WebSocket::FRAME_OP_CLOSE: {
-					poco_information(Logger_,
-									 fmt::format("CLOSE({}): Device is closing its connection.", CId_));
+					poco_debug(Logger_,
+									 fmt::format("CLOSE({}): session={} bytes={} flags={} errors={}", CId_, State_.sessionId, IncomingSize, flags, Errors_));
 					KillConnection=true;
 				} break;
 
@@ -446,74 +567,91 @@ namespace OpenWifi {
 				}
 			}
 
-			// Check for final frame and process accumulated payload
-			if (!KillConnection && (flags & Poco::Net::WebSocket::FRAME_FLAG_FIN) != 0) {
-				ProcessWSFinalPayload();
+			// Only data frames belong in the JSON message buffer. PING and
+			// PONG can interrupt a fragmented text message without altering it.
+			if (!KillConnection &&
+				(Op == Poco::Net::WebSocket::FRAME_OP_TEXT ||
+				 Op == Poco::Net::WebSocket::FRAME_OP_CONT)) {
+				const bool continuation = Op == Poco::Net::WebSocket::FRAME_OP_CONT;
+				const bool finalFrame = (flags & Poco::Net::WebSocket::FRAME_FLAG_FIN) != 0;
+				const auto decision = FramePolicy_.AcceptData(
+					continuation, finalFrame, IncomingFrame_.size(),
+					static_cast<std::size_t>(IncomingSize));
+				if (decision != AP_WS_FramePolicy::Decision::accept) {
+					poco_warning(Logger_, fmt::format(
+						"Invalid WebSocket message ({}) for {}: accumulated={} incoming={}",
+						decision == AP_WS_FramePolicy::Decision::tooLarge ? "too large" : "frame sequence",
+						CId_, IncomingFrame_.size(), IncomingSize));
+					KillConnection = true;
+				} else {
+					if (IncomingSize > 0) IncomingFrame_.append(CurrentFrame);
+					if (finalFrame) ProcessWSFinalPayload();
+				}
 			}
 
 		} catch (const Poco::Net::ConnectionResetException &E) {
 			poco_warning(Logger_,
-						 fmt::format("ConnectionResetException({}): Text:{} Payload:{} Session:{}",
+						 fmt::format("ConnectionResetException({}): Text:{} FrameBytes:{} Session:{}",
 									 CId_, E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 CurrentFrame.size(),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::JSON::JSONException &E) {
 			poco_warning(Logger_,
-						 fmt::format("JSONException({}): Text:{} Payload:{} Session:{}", CId_,
+						 fmt::format("JSONException({}): Text:{} FrameBytes:{} Session:{}", CId_,
 									 E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 CurrentFrame.size(),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::Net::WebSocketException &E) {
 			poco_warning(Logger_,
-						 fmt::format("WebSocketException({}): Text:{} Payload:{} Session:{}", CId_,
+						 fmt::format("WebSocketException({}): Text:{} FrameBytes:{} Session:{}", CId_,
 									 E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 CurrentFrame.size(),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::Net::SSLConnectionUnexpectedlyClosedException &E) {
 			poco_warning(
 				Logger_,
 				fmt::format(
-					"SSLConnectionUnexpectedlyClosedException({}): Text:{} Payload:{} Session:{}",
+					"SSLConnectionUnexpectedlyClosedException({}): Text:{} FrameBytes:{} Session:{}",
 					CId_, E.displayText(),
-					CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+					CurrentFrame.size(),
 					State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::Net::SSLException &E) {
 			poco_warning(Logger_,
-						 fmt::format("SSLException({}): Text:{} Payload:{} Session:{}", CId_,
+						 fmt::format("SSLException({}): Text:{} FrameBytes:{} Session:{}", CId_,
 									 E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 CurrentFrame.size(),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::Net::NetException &E) {
 			poco_warning(Logger_,
-						 fmt::format("NetException({}): Text:{} Payload:{} Session:{}", CId_,
+						 fmt::format("NetException({}): Text:{} FrameBytes:{} Session:{}", CId_,
 									 E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 CurrentFrame.size(),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::IOException &E) {
 			poco_warning(Logger_,
-						 fmt::format("IOException({}): Text:{} Payload:{} Session:{}", CId_,
+						 fmt::format("IOException({}): Text:{} FrameBytes:{} Session:{}", CId_,
 									 E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 CurrentFrame.size(),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const Poco::Exception &E) {
 			poco_warning(Logger_,
-						 fmt::format("Exception({}): Text:{} Payload:{} Session:{}", CId_,
+						 fmt::format("Exception({}): Text:{} FrameBytes:{} Session:{}", CId_,
 									 E.displayText(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 CurrentFrame.size(),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (const std::exception &E) {
 			poco_warning(Logger_,
-						 fmt::format("std::exception({}): Text:{} Payload:{} Session:{}", CId_,
+						 fmt::format("std::exception({}): Text:{} FrameBytes:{} Session:{}", CId_,
 									 E.what(),
-									 CurrentFrame.begin() == nullptr ? "" : CurrentFrame.begin(),
+									 CurrentFrame.size(),
 									 State_.sessionId));
 			KillConnection=true;
 		} catch (...) {
@@ -534,7 +672,11 @@ namespace OpenWifi {
 
 	bool AP_WS_Connection::Send(const std::string &Payload,std::chrono::milliseconds WaitTimeInMs ) {
 		try {
-			size_t BytesSent = WS_->sendFrame(Payload.c_str(), (int)Payload.size());
+			if (Payload.size() > static_cast<std::size_t>(std::numeric_limits<int>::max() - 16))
+				return false;
+			if (!WriteFrame(Payload.data(), static_cast<int>(Payload.size()),
+					Poco::Net::WebSocket::FRAME_TEXT)) return false;
+			const auto BytesSent = Payload.size();
 
 			/*
 			 * 	There is a possibility to actually try and send data but the device is no longer
@@ -543,32 +685,33 @@ namespace OpenWifi {
 			 * data never made it or the device is disconnected somehow.
 			 */
 #if defined(__APPLE__)
-			tcp_connection_info info;
+			tcp_connection_info info{};
 			int timeout = 4000;
 			auto expireAt = std::chrono::system_clock::now() + std::chrono::milliseconds(timeout);
 			do {
 				std::this_thread::sleep_for(std::chrono::milliseconds(50));
 				socklen_t opt_len = sizeof(info);
-				getsockopt(WS_->impl()->sockfd(), SOL_SOCKET, TCP_CONNECTION_INFO, (void *)&info,
-						   &opt_len);
+				if (Dead_ || WritesDisabled_ || getsockopt(WS_->impl()->sockfd(), SOL_SOCKET,
+						TCP_CONNECTION_INFO, (void *)&info, &opt_len) != 0) return false;
 			} while (!info.tcpi_tfo_syn_data_acked && expireAt > std::chrono::system_clock::now());
 			if (!info.tcpi_tfo_syn_data_acked)
 				return false;
 #else
-			tcp_info info;
+			tcp_info info{};
 			int timeout = 4000;
 			auto expireAt = std::chrono::system_clock::now() + std::chrono::milliseconds(timeout);
 			do {
 				std::this_thread::sleep_for(std::chrono::milliseconds(20));
 				socklen_t opt_len = sizeof(info);
-				getsockopt(WS_->impl()->sockfd(), SOL_TCP, TCP_INFO, (void *)&info, &opt_len);
+				if (Dead_ || WritesDisabled_ || getsockopt(WS_->impl()->sockfd(), SOL_TCP,
+						TCP_INFO, (void *)&info, &opt_len) != 0) return false;
 			} while (info.tcpi_unacked > 0 && expireAt > std::chrono::system_clock::now());
 
 			if (info.tcpi_unacked > 0) {
 				return false;
 			}
 #endif
-			State_.TX += BytesSent;
+			SentBytes_.fetch_add(BytesSent, std::memory_order_relaxed);
 			GetAPServer()->AddTX(BytesSent);
 			return BytesSent == Payload.size();
 		} catch (const Poco::Exception &E) {

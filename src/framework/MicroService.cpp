@@ -18,6 +18,7 @@
 #include "Poco/SplitterChannel.h"
 
 #include "framework/ALBserver.h"
+#include "framework/BoundedAsyncLogging.h"
 #include "framework/AuthClient.h"
 #include "framework/KafkaManager.h"
 #include "framework/MicroService.h"
@@ -124,7 +125,7 @@ namespace OpenWifi {
 										else
 											SvcList += ", " + Svc.second.Type;
 									}
-									poco_information(
+									poco_debug(
 										BusLogger,
 										fmt::format("Current list of microservices: {}", SvcList));
 								} else if(CurrentSize!=PreviousSize) {
@@ -179,7 +180,7 @@ namespace OpenWifi {
 			}
             if(Services_.size() != si1) {
                 auto ss2 = MakeServiceListString(Services_);
-                poco_information(BusLogger, fmt::format("Current list of microservices: {} -> {}", ss1, ss2));
+                poco_debug(BusLogger, fmt::format("Current list of microservices: {} -> {}", ss1, ss2));
             }
 
 		} catch (const Poco::Exception &E) {
@@ -315,7 +316,7 @@ namespace OpenWifi {
 
 		if (DisableWebSocketLogging) {
 			if (UseAsync) {
-				Poco::AutoPtr<Poco::AsyncChannel> Async(new Poco::AsyncChannel(FormattingChannel));
+				Poco::AutoPtr<Poco::Channel> Async = BoundedLogging::MakeLoggingAsyncChannel(FormattingChannel);
 				Poco::Logger::root().setChannel(Async);
 			} else {
 				Poco::Logger::root().setChannel(FormattingChannel);
@@ -326,7 +327,7 @@ namespace OpenWifi {
 			Splitter->addChannel(WSLogger);
 			Splitter->addChannel(FormattingChannel);
 			if (UseAsync) {
-				Poco::AutoPtr<Poco::AsyncChannel> Async(new Poco::AsyncChannel(Splitter));
+				Poco::AutoPtr<Poco::Channel> Async = BoundedLogging::MakeLoggingAsyncChannel(Splitter);
 				Poco::Logger::root().setChannel(Async);
 			} else {
 				Poco::Logger::root().setChannel(Splitter);
@@ -347,7 +348,7 @@ namespace OpenWifi {
 
 		if (DisableWebSocketLogging) {
 			if (UseAsync) {
-				Poco::AutoPtr<Poco::AsyncChannel> Async(new Poco::AsyncChannel(FormattingChannel));
+				Poco::AutoPtr<Poco::Channel> Async = BoundedLogging::MakeLoggingAsyncChannel(FormattingChannel);
 				Poco::Logger::root().setChannel(Async);
 			} else {
 				Poco::Logger::root().setChannel(FormattingChannel);
@@ -358,7 +359,7 @@ namespace OpenWifi {
 			Splitter->addChannel(WSLogger);
 			Splitter->addChannel(FormattingChannel);
 			if (UseAsync) {
-				Poco::AutoPtr<Poco::AsyncChannel> Async(new Poco::AsyncChannel(Splitter));
+				Poco::AutoPtr<Poco::Channel> Async = BoundedLogging::MakeLoggingAsyncChannel(Splitter);
 				Poco::Logger::root().setChannel(Async);
 			} else {
 				Poco::Logger::root().setChannel(Splitter);
@@ -409,7 +410,7 @@ namespace OpenWifi {
 
 		if (DisableWebSocketLogging) {
 			if (UseAsync) {
-				Poco::AutoPtr<Poco::AsyncChannel> Async(new Poco::AsyncChannel(FormattingChannel));
+				Poco::AutoPtr<Poco::Channel> Async = BoundedLogging::MakeLoggingAsyncChannel(FormattingChannel);
 				Poco::Logger::root().setChannel(Async);
 			} else {
 				Poco::Logger::root().setChannel(FormattingChannel);
@@ -420,7 +421,7 @@ namespace OpenWifi {
 			Splitter->addChannel(WSLogger);
 			Splitter->addChannel(FormattingChannel);
 			if (UseAsync) {
-				Poco::AutoPtr<Poco::AsyncChannel> Async(new Poco::AsyncChannel(Splitter));
+				Poco::AutoPtr<Poco::Channel> Async = BoundedLogging::MakeLoggingAsyncChannel(Splitter);
 				Poco::Logger::root().setChannel(Async);
 			} else {
 				Poco::Logger::root().setChannel(Splitter);

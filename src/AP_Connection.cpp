@@ -54,13 +54,17 @@ namespace OpenWifi {
 
 	void AP_Connection::DeviceDisconnectionCleanup(const std::string &SerialNumber,
 												   std::uint64_t uuid) {
-		if (KafkaManager()->Enabled()) {
-			NotifyKafkaDisconnect(SerialNumber, uuid);
-		}
-		RADIUSSessionTracker()->DeviceDisconnect(SerialNumber);
-		GWWebSocketNotifications::SingleDevice_t N;
-		N.content.serialNumber = SerialNumber;
-		GWWebSocketNotifications::DeviceDisconnected(N);
+		TeardownStep("Kafka disconnect notification failed", [&] {
+			if (KafkaManager()->Enabled()) NotifyKafkaDisconnect(SerialNumber, uuid);
+		});
+		TeardownStep("RADIUS session cleanup failed", [&] {
+			RADIUSSessionTracker()->DeviceDisconnect(SerialNumber, State_.sessionId);
+		});
+		TeardownStep("UI disconnect notification failed", [&] {
+			GWWebSocketNotifications::SingleDevice_t N;
+			N.content.serialNumber = SerialNumber;
+			GWWebSocketNotifications::DeviceDisconnected(N);
+		});
 	}
 
 	void AP_Connection::ProcessJSONRPCResult(Poco::JSON::Object::Ptr Doc) {
@@ -99,8 +103,8 @@ namespace OpenWifi {
 				if (Utils::ExtractBase64CompressedData(CompressedData, UncompressedData,
 													   compress_sz)) {
 					poco_trace(Logger_,
-							   fmt::format("EVENT({}): Found compressed payload expanded to '{}'.",
-										   CId_, UncompressedData));
+							   fmt::format("EVENT({}): session={} method={:.128} compressed_bytes={} expanded_bytes={}",
+										 CId_, State_.sessionId, Method, CompressedData.size(), UncompressedData.size()));
 					Poco::JSON::Parser Parser;
 					ParamsObj = Parser.parse(UncompressedData).extract<Poco::JSON::Object::Ptr>();
 				} else {
@@ -221,7 +225,7 @@ namespace OpenWifi {
 
 	bool AP_Connection::StartTelemetry(uint64_t RPCID,
 									   const std::vector<std::string> &TelemetryTypes) {
-		poco_information(Logger_, fmt::format("TELEMETRY({}): Starting.", CId_));
+		poco_debug(Logger_, fmt::format("TELEMETRY({}): Starting.", CId_));
 		Poco::JSON::Object StartMessage;
 		StartMessage.set("jsonrpc", "2.0");
 		StartMessage.set("method", "telemetry");
@@ -247,7 +251,7 @@ namespace OpenWifi {
 	}
 
 	bool AP_Connection::StopTelemetry(uint64_t RPCID) {
-		poco_information(Logger_, fmt::format("TELEMETRY({}): Stopping.", CId_));
+		poco_debug(Logger_, fmt::format("TELEMETRY({}): Stopping.", CId_));
 		Poco::JSON::Object StopMessage;
 		StopMessage.set("jsonrpc", "2.0");
 		StopMessage.set("method", "telemetry");
@@ -384,13 +388,14 @@ namespace OpenWifi {
 	}
 
 	void AP_Connection::ProcessIncomingRadiusData(const Poco::JSON::Object::Ptr &Doc) {
+		if (Dead_ || !DeviceSessionStarted_) return;
 		if (Doc->has(uCentralProtocol::RADIUSDATA)) {
 			auto Type = Doc->get(uCentralProtocol::RADIUS).toString();
 			if (Type == uCentralProtocol::RADIUSACCT) {
 				auto Data = Doc->get(uCentralProtocol::RADIUSDATA).toString();
 				auto DecodedData = Base64Decode(Data);
 				RADIUS_proxy_server()->SendAccountingData(SerialNumber_, DecodedData.c_str(),
-														  DecodedData.size());
+														  DecodedData.size(), State_.sessionId);
 			} else if (Type == uCentralProtocol::RADIUSAUTH) {
 				auto Data = Doc->get(uCentralProtocol::RADIUSDATA).toString();
 				auto DecodedData = Base64Decode(Data);

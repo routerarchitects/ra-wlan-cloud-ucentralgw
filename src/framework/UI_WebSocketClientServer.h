@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <mutex>
 #include <map>
 #include <string>
 
@@ -67,6 +69,7 @@ namespace OpenWifi {
 		template <typename T>
 		bool SendUserNotification(const std::string &userName,
 								  const WebSocketNotification<T> &Notification) {
+			if (!IsAnyoneConnected()) return false;
 
 			Poco::JSON::Object Payload;
 			Notification.to_json(Payload);
@@ -79,6 +82,8 @@ namespace OpenWifi {
 		}
 
 		template <typename T> void SendNotification(const WebSocketNotification<T> &Notification) {
+			// Avoid JSON and string allocations with zero subscribed UI clients.
+			if (!IsAnyoneConnected()) return;
 			Poco::JSON::Object Payload;
 			Notification.to_json(Payload);
 			Poco::JSON::Object Msg;
@@ -104,7 +109,9 @@ namespace OpenWifi {
 		bool IsFiltered(std::uint64_t id, const UI_WebSocketClientInfo &Client);
 
 	  private:
-		volatile bool Running_ = false;
+		std::atomic_bool Running_ = false;
+		// Serialize Start/Stop separately; never hold LocalMutex_ while joining.
+		std::mutex LifecycleMutex_;
 		std::atomic_uint64_t UsersConnected_ = 0;
 		Poco::Net::SocketReactor Reactor_;
 		Poco::Thread ReactorThread_;

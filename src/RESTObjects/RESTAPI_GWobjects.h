@@ -443,6 +443,8 @@ namespace OpenWifi::GWObjects {
 
 #ifdef TIP_GATEWAY_SERVICE
 		RADIUS::RadiusPacket	accountingPacket;
+		// Internal connection generation; not serialized in the REST response.
+		std::uint64_t apSessionId = 0;
 #endif
 
 		void to_json(Poco::JSON::Object &Obj) const;

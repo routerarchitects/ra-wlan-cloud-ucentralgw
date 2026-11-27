@@ -12,6 +12,7 @@
 #include <memory>
 
 #include "AP_Connection.h"
+#include "AP_WS_FramePolicy.h"
 #include "Poco/Net/SocketNotification.h"
 #include "Poco/Net/SocketReactor.h"
 #include "Poco/Net/StreamSocket.h"
@@ -24,8 +25,8 @@
 
 namespace OpenWifi {
 
-	class AP_WS_Connection : public AP_Connection {
-		static constexpr int BufSize = 512000;
+	class AP_WS_Connection : public AP_Connection, public std::enable_shared_from_this<AP_WS_Connection> {
+		static constexpr int BufSize = static_cast<int>(AP_WS_FramePolicy::MaxMessageBytes);
 
 	  public:
 		explicit AP_WS_Connection(Poco::Net::HTTPServerRequest &request,
@@ -48,7 +49,14 @@ namespace OpenWifi {
 		std::shared_ptr<Poco::Net::SocketReactor> Reactor_;
 		std::unique_ptr<Poco::Net::WebSocket> WS_;
 		std::atomic_bool Registered_ = false;
+		// Never acquire ConnectionMutex_ while holding SocketWriteMutex_.
+		// Send() may be called with TelemetryMutex_ held.
+		std::mutex SocketWriteMutex_;
+		std::atomic_bool WritesDisabled_ = false;
+		bool WriteFrame(const void *payload, int length, int flags);
+		void ShutdownTransportLocked() noexcept;
 		Poco::Buffer<char> IncomingFrame_;
+		AP_WS_FramePolicy FramePolicy_;
 	};
 
 } // namespace OpenWifi

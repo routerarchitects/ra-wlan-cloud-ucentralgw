@@ -11,11 +11,14 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "AP_Connection.h"
@@ -87,7 +90,8 @@ namespace OpenWifi {
 			return GetHealthcheck(Utils::SerialNumberToInt(SerialNumber), CheckData);
 		}
 
-		void StartSession(uint64_t session_id, uint64_t SerialNumber);
+		bool StartSession(uint64_t session_id, uint64_t SerialNumber,
+			bool allowReplacement = true, bool *replacedSession = nullptr);
 		bool EndSession(uint64_t session_id, uint64_t SerialNumber);
 		bool Disconnect(uint64_t SerialNumber);
 		void CleanupSessions();
@@ -140,18 +144,38 @@ namespace OpenWifi {
 		bool SendRadiusCoAData(const std::string &SerialNumber, const unsigned char *buffer,
 							   std::size_t size);
 
-		inline void AddConnection(std::shared_ptr<AP_Connection> Connection) {
-			std::uint64_t sessionHash = SessionHash::Hash(Connection->State_.sessionId);
-			std::lock_guard SessionLock(SessionMutex_[sessionHash]);
-			if (Sessions_[sessionHash].find(Connection->State_.sessionId) ==
-				end(Sessions_[sessionHash])) {
-				Sessions_[sessionHash][Connection->State_.sessionId] = std::move(Connection);
-			}
+		[[nodiscard]] inline bool AddConnection(const std::shared_ptr<AP_Connection> &Connection) {
+			const auto id = Connection->State_.sessionId;
+			const auto hash = SessionHash::Hash(id);
+			std::lock_guard SessionLock(SessionMutex_[hash]);
+			if (!Running_) return false;
+			if (!Sessions_[hash].try_emplace(id, Connection).second) return false;
+			Connection->SessionAdmitted_.store(true, std::memory_order_release);
+			return true;
 		}
 
-		inline void AddCleanupSession(uint64_t session_id, uint64_t SerialNumber) {
-			std::lock_guard G(CleanupMutex_);
-			CleanupSessions_.emplace_back(session_id, SerialNumber);
+		inline void AddCleanupSession(uint64_t session_id, uint64_t SerialNumber, bool idleOnly = false) noexcept {
+			try {
+				{
+					std::lock_guard G(CleanupMutex_);
+					if (CleanupStopping_) return;
+					// Idle work must never suppress a later unconditional disconnect.
+					if (idleOnly && CleanupScheduledSessions_.count(session_id)) return;
+					auto &scheduled = idleOnly ? IdleCleanupScheduledSessions_ : CleanupScheduledSessions_;
+					if (!scheduled.insert(session_id).second)
+						return; // Already queued or being processed.
+					try {
+						CleanupSessions_.push_back({session_id, SerialNumber, idleOnly});
+					} catch (...) {
+						scheduled.erase(session_id);
+						throw;
+					}
+				}
+				CleanupReady_.notify_one();
+			} catch (...) {
+				// A still-owned dead/idle session is eligible for the next GC scan.
+				try { Logger().error("Unable to schedule session cleanup; janitor will retry owned sessions"); } catch (...) {}
+			}
 		}
 
 		inline void IncrementConnectionCount() { ++NumberOfConnectedDevices_; }
@@ -210,6 +234,7 @@ namespace OpenWifi {
 		
 		void ReadEnvironment();
 		void SetJanitor(const std::string &garbageName);
+		void StopCleanupWorker();
 		using SerialNumberMap = std::map<uint64_t, std::shared_ptr<AP_Connection>>;
 
 		std::array<std::mutex, SessionHashMax> SessionMutex_;
@@ -219,7 +244,16 @@ namespace OpenWifi {
 		mutable std::array<std::mutex, MACHashMax> SerialNumbersMutex_;
 
 		std::mutex CleanupMutex_;
-		std::deque<std::pair<uint64_t, uint64_t>> CleanupSessions_;
+		std::condition_variable CleanupReady_;
+		bool CleanupStopping_ = true; // guarded by CleanupMutex_, independent of Running_
+		struct CleanupRequest {
+			uint64_t sessionId, serialNumber;
+			bool idleOnly;
+		};
+		void CleanupIdleSession(uint64_t session_id, uint64_t SerialNumber);
+		std::deque<CleanupRequest> CleanupSessions_;
+		std::unordered_set<uint64_t> CleanupScheduledSessions_;
+		std::unordered_set<uint64_t> IdleCleanupScheduledSessions_;
 
 		std::atomic_bool Running_ = false;
 		std::uint64_t SessionTimeOut_ = 10 * 60;
@@ -238,7 +272,7 @@ namespace OpenWifi {
 		bool SimulatorEnabled_ = false;
 		bool AllowSerialNumberMismatch_ = true;
 		std::uint64_t MismatchDepth_ = 2;
-		Poco::Thread CleanupThread_;
+		std::thread CleanupThread_;
 		Poco::Thread GarbageCollector_;
 		std::string GarbageCollectorName;
 	};
