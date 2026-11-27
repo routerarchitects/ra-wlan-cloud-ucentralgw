@@ -90,7 +90,8 @@ namespace OpenWifi {
 			return GetHealthcheck(Utils::SerialNumberToInt(SerialNumber), CheckData);
 		}
 
-		bool StartSession(uint64_t session_id, uint64_t SerialNumber);
+		bool StartSession(uint64_t session_id, uint64_t SerialNumber,
+			bool allowReplacement = true, bool *replacedSession = nullptr);
 		bool EndSession(uint64_t session_id, uint64_t SerialNumber);
 		bool Disconnect(uint64_t SerialNumber);
 		void CleanupSessions();
@@ -153,17 +154,20 @@ namespace OpenWifi {
 			return true;
 		}
 
-		inline void AddCleanupSession(uint64_t session_id, uint64_t SerialNumber) noexcept {
+		inline void AddCleanupSession(uint64_t session_id, uint64_t SerialNumber, bool idleOnly = false) noexcept {
 			try {
 				{
 					std::lock_guard G(CleanupMutex_);
 					if (CleanupStopping_) return;
-					if (!CleanupScheduledSessions_.insert(session_id).second)
+					// Idle work must never suppress a later unconditional disconnect.
+					if (idleOnly && CleanupScheduledSessions_.count(session_id)) return;
+					auto &scheduled = idleOnly ? IdleCleanupScheduledSessions_ : CleanupScheduledSessions_;
+					if (!scheduled.insert(session_id).second)
 						return; // Already queued or being processed.
 					try {
-						CleanupSessions_.emplace_back(session_id, SerialNumber);
+						CleanupSessions_.push_back({session_id, SerialNumber, idleOnly});
 					} catch (...) {
-						CleanupScheduledSessions_.erase(session_id);
+						scheduled.erase(session_id);
 						throw;
 					}
 				}
@@ -242,8 +246,14 @@ namespace OpenWifi {
 		std::mutex CleanupMutex_;
 		std::condition_variable CleanupReady_;
 		bool CleanupStopping_ = true; // guarded by CleanupMutex_, independent of Running_
-		std::deque<std::pair<uint64_t, uint64_t>> CleanupSessions_;
+		struct CleanupRequest {
+			uint64_t sessionId, serialNumber;
+			bool idleOnly;
+		};
+		void CleanupIdleSession(uint64_t session_id, uint64_t SerialNumber);
+		std::deque<CleanupRequest> CleanupSessions_;
 		std::unordered_set<uint64_t> CleanupScheduledSessions_;
+		std::unordered_set<uint64_t> IdleCleanupScheduledSessions_;
 
 		std::atomic_bool Running_ = false;
 		std::uint64_t SessionTimeOut_ = 10 * 60;

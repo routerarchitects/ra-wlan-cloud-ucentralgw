@@ -8,7 +8,6 @@
 #include "Poco/JSON/Parser.h"
 #include "Poco/Logger.h"
 #include "Poco/NObserver.h"
-#include "Poco/Net/SocketImpl.h"
 
 #include "framework/AuthClient.h"
 #include "framework/MicroServiceFuncs.h"
@@ -24,10 +23,6 @@
 	{ std::cout << __LINE__ << std::endl; }
 
 namespace OpenWifi {
-
-	namespace {
-		constexpr auto MaxIncompleteRead = std::chrono::seconds(60);
-	}
 
 	void UI_WebSocketClientServer::NewClient(Poco::Net::WebSocket &WS, const std::string &Id,
 											 const std::string &UserName, std::uint64_t TID) {
@@ -76,21 +71,6 @@ namespace OpenWifi {
 				Clients_.erase(i);
 			}
 			ToBeRemoved_.clear();
-			const auto now = std::chrono::steady_clock::now();
-			for (const auto &[fd, client] : Clients_) {
-				if (!client->SocketRegistered_ ||
-					client->IncompleteReadSince_ == std::chrono::steady_clock::time_point{} ||
-					now - client->IncompleteReadSince_ < MaxIncompleteRead) continue;
-				// Do not remove NObservers from the cleaner thread under LocalMutex_:
-				// a callback may already be waiting for that mutex. Force TCP shutdown
-				// and let the reactor callback perform its normal removal.
-				try {
-					using Poco::Net::SocketImpl;
-					client->WS_->impl()->SocketImpl::shutdown();
-				} catch (const Poco::Exception &e) {
-					Logger().log(e);
-				}
-			}
 			UsersConnected_ = Clients_.size();
 		}
 	}
@@ -280,33 +260,12 @@ namespace OpenWifi {
 			if (Client == end(Clients_) || !Client->second->SocketRegistered_)
 				return;
 
-			using Clock = std::chrono::steady_clock;
-			if (Client->second->IncompleteReadSince_ != Clock::time_point{} &&
-				Clock::now() - Client->second->IncompleteReadSince_ >= MaxIncompleteRead) {
-				poco_warning(Logger(), fmt::format(
-					"UI WebSocket {} incomplete read timeout; disconnecting.", Client->second->Id_));
-				return EndConnection(Client);
-			}
-
 			Poco::Buffer<char> IncomingFrame(0);
 			int flags = 0;
 			const int n = Client->second->WS_->receiveFrame(IncomingFrame, flags);
-
-			if (n == -1) {
-				// Partial nonblocking reads are normal. Use an elapsed interval
-				// rather than counting callbacks, and reset on a complete frame.
-				const auto now = Clock::now();
-				auto &since = Client->second->IncompleteReadSince_;
-				if (since == Clock::time_point{}) since = now;
-				else if (now - since >= MaxIncompleteRead) {
-					poco_warning(Logger(), fmt::format(
-						"UI WebSocket {} incomplete read timeout; disconnecting.",
-						Client->second->Id_));
-					return EndConnection(Client);
-				}
-				return;
-			}
-			Client->second->IncompleteReadSince_ = {};
+			// Poco can return -1 with no frame bytes available. Retry on the next
+			// readable notification, without starting a false incomplete-frame timer.
+			if (n == -1) return;
 			if (n == 0 && flags == 0) {
 				poco_debug(Logger(),
 					fmt::format("CLOSE({}): {} UI Client is closing WS connection.",

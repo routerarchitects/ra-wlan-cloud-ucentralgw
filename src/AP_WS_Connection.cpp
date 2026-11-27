@@ -395,8 +395,9 @@ namespace OpenWifi {
 	void AP_WS_Connection::OnSocketReadable(
 		[[maybe_unused]] const Poco::AutoPtr<Poco::Net::ReadableNotification> &pNf) {
 
+		if (Dead_.load(std::memory_order_acquire)) return;
 		std::lock_guard G(ConnectionMutex_);
-		if (Dead_) return;
+		if (Dead_.load(std::memory_order_acquire)) return;
 		if (WritesDisabled_) return EndConnection();
 		if (GetAPServer()->Running() && (DeviceValidated_ || ValidatedDevice())) {
 			try {

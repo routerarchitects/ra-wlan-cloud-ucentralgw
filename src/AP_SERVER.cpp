@@ -82,12 +82,15 @@ namespace OpenWifi {
 		return true;
 	}
 
-	bool AP_Server::StartSession(uint64_t session_id, uint64_t SerialNumber) {
+	bool AP_Server::StartSession(uint64_t session_id, uint64_t SerialNumber,
+		bool allowReplacement, bool *replacedSession) {
+		if (replacedSession) *replacedSession = false;
 		const auto sessionHash = SessionHash::Hash(session_id);
 		const auto deviceHash = MACHash::Hash(SerialNumber);
 		std::shared_ptr<AP_Connection> retired;
 		for (;;) {
 			std::shared_ptr<AP_Connection> previous;
+			bool mismatch = false;
 			{
 				std::scoped_lock maps(SessionMutex_[sessionHash], SerialNumbersMutex_[deviceHash]);
 				if (!Running_) return false;
@@ -103,7 +106,10 @@ namespace OpenWifi {
 				std::lock_guard cleanup(CleanupMutex_);
 				if (CleanupScheduledSessions_.count(session_id)) return false;
 				if (existing != devices.end() && existing->second && existing->second != retired) {
+					// A failed device lookup must not evict an existing connection.
+					if (!allowReplacement) return false;
 					previous = existing->second;
+					mismatch = it->second->State_.VerifiedCertificate == GWObjects::MISMATCH_SERIAL;
 				} else {
 					auto &slot = devices[SerialNumber];
 					// The old connection has completed its synchronous teardown.
@@ -116,7 +122,17 @@ namespace OpenWifi {
 			}
 			// Never acquire a connection lock while holding map locks.
 			// If another session won during teardown, recheck before promotion.
-			previous->EndConnection();
+			// The configured mismatch exception permits ordinary connections, but
+			// a mismatched certificate must not evict a live, verified AP.
+			if (mismatch) {
+				std::lock_guard G(previous->ConnectionMutex_);
+				if (!previous->Dead_ && previous->State_.VerifiedCertificate == GWObjects::VERIFIED)
+					return false;
+				previous->EndConnection();
+			} else {
+				previous->EndConnection();
+			}
+			if (replacedSession) *replacedSession = true;
 			retired = std::move(previous);
 		}
 	}
@@ -217,9 +233,34 @@ namespace OpenWifi {
 		return EndSession(connection->State_.sessionId, SerialNumber);
 	}
 
+	void AP_Server::CleanupIdleSession(uint64_t session_id, uint64_t SerialNumber) {
+		std::shared_ptr<AP_Connection> connection;
+		const auto sessionHash = SessionHash::Hash(session_id);
+		const auto deviceHash = MACHash::Hash(SerialNumber);
+		{
+			std::scoped_lock maps(SessionMutex_[sessionHash], SerialNumbersMutex_[deviceHash]);
+			auto pending = Sessions_[sessionHash].find(session_id);
+			if (pending != Sessions_[sessionHash].end()) connection = pending->second;
+			if (!connection) {
+				auto active = SerialNumbers_[deviceHash].find(SerialNumber);
+				if (active != SerialNumbers_[deviceHash].end() && active->second &&
+					active->second->State_.sessionId == session_id)
+					connection = active->second;
+			}
+		}
+		if (!connection) return;
+		// Revalidate after releasing the map locks, under the same lock used by
+		// message processing. EndConnection schedules unconditional cleanup.
+		std::lock_guard G(connection->ConnectionMutex_);
+		if (connection->Dead_) return;
+		const auto now = Utils::Now();
+		const auto last = connection->LastContact_.load(std::memory_order_relaxed);
+		if (now > last && now - last > SessionTimeOut_) connection->EndConnection();
+	}
+
 	void AP_Server::CleanupSessions() {
 		for (;;) {
-			std::pair<uint64_t, uint64_t> Session;
+			CleanupRequest Session;
 			{
 				std::unique_lock G(CleanupMutex_);
 				CleanupReady_.wait(G, [this]() {
@@ -233,13 +274,15 @@ namespace OpenWifi {
 				CleanupSessions_.pop_front();
 			}
 			try {
-				EndSession(Session.first, Session.second);
+				if (Session.idleOnly) CleanupIdleSession(Session.sessionId, Session.serialNumber);
+				else EndSession(Session.sessionId, Session.serialNumber);
 			} catch (...) {
-				try { poco_error(Logger(), fmt::format("Session cleanup {} failed", Session.first)); } catch (...) {}
+				try { poco_error(Logger(), fmt::format("Session cleanup {} failed", Session.sessionId)); } catch (...) {}
 			}
 			{
 				std::lock_guard G(CleanupMutex_);
-				CleanupScheduledSessions_.erase(Session.first);
+				auto &scheduled = Session.idleOnly ? IdleCleanupScheduledSessions_ : CleanupScheduledSessions_;
+				scheduled.erase(Session.sessionId);
 			}
 		}
 	}
@@ -561,7 +604,7 @@ namespace OpenWifi {
 													"{}: Session seems idle. Controller disconnecting device.",
 													Device->SerialNumber_));
 											// hint = SerialNumbers_[hashIndex].erase(hint);
-											AddCleanupSession(Device->State_.sessionId, hint->first);
+											AddCleanupSession(Device->State_.sessionId, hint->first, true);
 											++hint;
 										} else {
 											if (Device->State_.Connected) {
@@ -609,7 +652,7 @@ namespace OpenWifi {
 											LocalLogger,
 												fmt::format("Session {} seems idle. Controller disconnecting pending session.",
 														hint->first));
-										AddCleanupSession(hint->first, 0);
+										AddCleanupSession(hint->first, 0, true);
 										++hint;
 										// hint = Sessions_[i].erase(hint);
 									} else {
